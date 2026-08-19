@@ -300,6 +300,33 @@ Value parse(std::string_view text) {
     return Parser(text).parse_document();
 }
 
+std::string quote(std::string_view text) {
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(text.size() + 2);
+    out += '"';
+    for (const char c : text) {
+        const auto u = static_cast<unsigned char>(c);
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (u < 0x20) {  // remaining control chars need \u00XX
+                    out += "\\u00";
+                    out += hex[u >> 4];
+                    out += hex[u & 0xf];
+                } else {
+                    out += c;  // UTF-8 bytes pass through untouched
+                }
+        }
+    }
+    out += '"';
+    return out;
+}
+
 std::string read_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {

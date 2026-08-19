@@ -71,8 +71,12 @@ if(APPLE)
         "-framework Metal" "-framework Foundation")
 endif()
 
-# --- CLI --------------------------------------------------------------------
-add_executable(nanoserve src/server/main.cpp)
+# --- CLI + HTTP server ------------------------------------------------------
+add_executable(nanoserve
+    src/server/main.cpp
+    src/server/http.cpp
+    src/server/serve.cpp
+)
 target_link_libraries(nanoserve PRIVATE nanoserve_core nanoserve_warnings)
 
 # --- Python bindings (F028) ---------------------------------------------------
@@ -125,6 +129,16 @@ if(NANOSERVE_BUILD_TESTS)
     nanoserve_test(test_alloc)
     nanoserve_test(test_quant)
     nanoserve_test(test_metal)   # skips (77) without a Metal device
+
+    # test_server spawns the real `nanoserve` binary (path passed as argv[1])
+    # and speaks HTTP to it over a socket; skips without model weights.
+    add_executable(test_server tests/test_server.cpp)
+    target_link_libraries(test_server PRIVATE nanoserve_core nanoserve_warnings)
+    add_test(NAME test_server COMMAND test_server $<TARGET_FILE:nanoserve>)
+    set_tests_properties(test_server PROPERTIES
+        SKIP_RETURN_CODE 77
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
 
     # The scalar fallback runs the same op goldens (F026): if SIMD and scalar
     # ever disagree beyond tolerance, one of these two tests fails.

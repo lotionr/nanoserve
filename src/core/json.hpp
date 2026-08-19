@@ -107,6 +107,12 @@ private:
 /// offset on malformed input. Trailing non-whitespace is an error.
 Value parse(std::string_view text);
 
+/// `text` as a JSON string literal, quotes included: escapes ", \, and
+/// control characters; passes UTF-8 through byte for byte. This is the only
+/// serialization the server needs — response bodies are assembled from
+/// literals plus quote()d strings (F035), not from a Value tree.
+std::string quote(std::string_view text);
+
 /// Reads an entire file into a string. Throws on failure.
 std::string read_file(const std::string& path);
 

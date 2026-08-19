@@ -3,9 +3,8 @@
 //   nanoserve inspect  <file.safetensors>            tensor table + totals
 //   nanoserve tokenize <model_dir> <text>            encode/decode roundtrip
 //   nanoserve generate <model_dir> -p <prompt>       greedy chat completion
+//   nanoserve serve    <model_dir> [--port P]        POST /v1/completions
 //   nanoserve version
-//
-// `serve` arrives with the HTTP endpoint (see feature_list.json).
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +21,7 @@
 #include "model/sampler.hpp"
 #include "model/tokenizer.hpp"
 #include "model/unicode.hpp"
+#include "server/serve.hpp"
 
 namespace {
 
@@ -39,6 +39,7 @@ int usage() {
                  "                     [--threads N] [--stats] [--int8]\n"
                  "                     [--backend cpu|metal]  (default: cpu)\n"
                  "  nanoserve quantize <model_dir> [-o out.safetensors]\n"
+                 "  nanoserve serve    <model_dir> [--port P] [--int8] [--threads N]\n"
                  "  nanoserve version\n",
                  static_cast<int>(kVersion.size()), kVersion.data());
     return 2;
@@ -281,6 +282,9 @@ int main(int argc, char** argv) {
         }
         if (args[0] == "quantize" && args.size() >= 2) {
             return cmd_quantize(args);
+        }
+        if (args[0] == "serve" && args.size() >= 2) {
+            return nano::cmd_serve(args);
         }
         return usage();
     } catch (const std::exception& e) {

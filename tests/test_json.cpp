@@ -68,5 +68,17 @@ int main() {
     NANO_CHECK_THROWS(parse("42").as_string());
     NANO_CHECK_THROWS(parse("\"s\"").as_int());
 
+    // quote() (F035, for server responses): parse must invert it exactly.
+    NANO_CHECK(nano::json::quote("plain") == "\"plain\"");
+    NANO_CHECK(nano::json::quote("a\"b\\c") == R"("a\"b\\c")");
+    NANO_CHECK(nano::json::quote("line\nbreak\ttab\rcr") ==
+               R"("line\nbreak\ttab\rcr")");
+    NANO_CHECK(nano::json::quote(std::string("\x01\x1f", 2)) == "\"\\u0001\\u001f\"");
+    NANO_CHECK(nano::json::quote("héllo 日本") == "\"héllo 日本\"");  // UTF-8 raw
+    for (const char* s : {"", "plain", "a\"b\\c", "n\newline", "héllo 日本 🙂"}) {
+        NANO_CHECK_MSG(parse(nano::json::quote(s)).as_string() == s,
+                       "quote/parse roundtrip failed for: %s", s);
+    }
+
     return nano::testing::finish("test_json");
 }
