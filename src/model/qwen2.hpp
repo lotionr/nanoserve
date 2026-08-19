@@ -22,32 +22,62 @@
 
 namespace nano {
 
-/// One transformer block's weights, fp32.
+/// One weight matrix for linear(): fp32, or int8 with one fp32 scale per
+/// output row (F027). Exactly one of f32 / q8 is populated; rows is d_out
+/// and cols is d_in, matching the [out, in] safetensors layout.
+struct Weight {
+    int64_t rows = 0;
+    int64_t cols = 0;
+    std::vector<float> f32;      // fp32 mode: [rows * cols]
+    std::vector<int8_t> q8;      // int8 mode: [rows * cols]
+    std::vector<float> scales;   // int8 mode: [rows]
+
+    bool quantized() const { return !q8.empty(); }
+};
+
+/// One transformer block's weights. Matrices may be fp32 or int8 (Weight);
+/// norms and biases are tiny and always stay fp32.
 /// Qwen2 quirk: q/k/v projections have biases; o_proj and the MLP do not.
 struct LayerWeights {
     std::vector<float> input_norm;  // [hidden]
-    std::vector<float> q_w, q_b;    // [n_heads*head_dim, hidden], [n_heads*head_dim]
-    std::vector<float> k_w, k_b;    // [n_kv_heads*head_dim, hidden], ...
-    std::vector<float> v_w, v_b;
-    std::vector<float> o_w;         // [hidden, n_heads*head_dim]
+    Weight q_w;                     // [n_heads*head_dim, hidden]
+    std::vector<float> q_b;         // [n_heads*head_dim]
+    Weight k_w;                     // [n_kv_heads*head_dim, hidden]
+    std::vector<float> k_b;
+    Weight v_w;
+    std::vector<float> v_b;
+    Weight o_w;                     // [hidden, n_heads*head_dim]
     std::vector<float> post_norm;   // [hidden]
-    std::vector<float> gate_w;      // [intermediate, hidden]
-    std::vector<float> up_w;        // [intermediate, hidden]
-    std::vector<float> down_w;      // [hidden, intermediate]
+    Weight gate_w;                  // [intermediate, hidden]
+    Weight up_w;                    // [intermediate, hidden]
+    Weight down_w;                  // [hidden, intermediate]
 };
 
-/// All model weights, loaded from safetensors and widened bf16 -> fp32.
-/// Keeping everything fp32 is the honest baseline; quantization is F027.
+/// All model weights. The fp32 checkpoint loads bf16 -> fp32 (the honest
+/// baseline); a file produced by `nanoserve quantize` loads the same tensors
+/// as int8 + per-row scales (F027) through the identical code path.
 struct Qwen2Model {
     ModelConfig config;
-    std::vector<float> embed_tokens;  // [vocab, hidden]; doubles as lm_head (tied)
+    Weight embed_tokens;              // [vocab, hidden]; doubles as lm_head (tied)
     std::vector<LayerWeights> layers;
     std::vector<float> final_norm;    // [hidden]
 
-    /// Loads config.json + model.safetensors. Throws on missing tensors or
-    /// shape mismatches — a model that half-loads must not half-run.
-    static Qwen2Model load(const std::string& model_dir);
+    bool quantized() const { return embed_tokens.quantized(); }
+
+    /// Loads config.json plus a weights file — model.safetensors when
+    /// `weights_file` is empty, else that file (e.g. model.int8.safetensors).
+    /// Throws on missing tensors or shape mismatches — a model that
+    /// half-loads must not half-run.
+    static Qwen2Model load(const std::string& model_dir,
+                           const std::string& weights_file = "");
 };
+
+/// Offline quantization pass (F027): reads model_dir/model.safetensors,
+/// quantizes every 2D weight matrix to int8 with per-row scales
+/// (quantize_rows), keeps norms/biases fp32, and writes a safetensors file
+/// to `out_path` (each quantized tensor keeps its name with dtype I8, plus a
+/// "<name>.scale" F32 tensor). Returns the number of quantized tensors.
+int quantize_model_file(const std::string& model_dir, const std::string& out_path);
 
 /// K/V storage: for each layer, `max_seq` rows of `n_kv_heads * head_dim`
 /// floats. Rows are written once per position and never move (contiguous
@@ -102,7 +132,10 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
 /// Owns the model, the cache, and the scratch buffers.
 class Engine {
 public:
-    explicit Engine(const std::string& model_dir, int64_t max_seq = 2048);
+    /// `weights_file` empty = model.safetensors (fp32); pass an int8 file
+    /// from `nanoserve quantize` to run quantized (F027).
+    explicit Engine(const std::string& model_dir, int64_t max_seq = 2048,
+                    const std::string& weights_file = "");
 
     /// Appends `ids` to the sequence, runs the forward pass over them, and
     /// returns the logits ([vocab_size]) for the last token fed.

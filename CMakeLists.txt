@@ -22,6 +22,7 @@ set(NANOSERVE_CORE_SOURCES
     src/core/json.cpp
     src/core/mmap_file.cpp
     src/core/ops.cpp
+    src/core/quant.cpp
     src/core/safetensors.cpp
     src/core/threadpool.cpp
     src/model/chat_template.cpp
@@ -81,6 +82,7 @@ if(NANOSERVE_BUILD_TESTS)
     nanoserve_test(test_sampling)
     nanoserve_test(test_streaming)
     nanoserve_test(test_alloc)
+    nanoserve_test(test_quant)
 
     # The scalar fallback runs the same op goldens (F026): if SIMD and scalar
     # ever disagree beyond tolerance, one of these two tests fails.

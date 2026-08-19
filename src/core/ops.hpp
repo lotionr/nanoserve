@@ -34,6 +34,17 @@ float dot(const float* a, const float* b, int64_t n);
 void linear(const float* x, const float* w, const float* bias, float* y,
             int64_t tokens, int64_t d_in, int64_t d_out);
 
+/// linear() with an int8 weight matrix (F027): W holds per-row-quantized
+/// int8 values ([d_out, d_in], same layout as fp32), `scales` one fp32 scale
+/// per output row. Each weight is widened to fp32 in-register and the row's
+/// dot product is scaled once at the end:
+///   y[t, o] = scales[o] * sum_i x[t, i] * (float)w[o, i]  (+ bias[o]).
+/// Activations stay fp32 — the point is reading 4x fewer weight bytes, which
+/// is what bounds decode speed, not the multiply-adds.
+void linear_q8(const float* x, const int8_t* w, const float* scales,
+               const float* bias, float* y, int64_t tokens, int64_t d_in,
+               int64_t d_out);
+
 /// c[m, n] = a[m, k] @ b[k, n]. Plain row-major matmul.
 void matmul(const float* a, const float* b, float* c, int64_t m, int64_t k, int64_t n);
 

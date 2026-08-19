@@ -92,6 +92,60 @@ void linear_range(const float* x, const float* w, const float* bias, float* y,
     }
 }
 
+/// Dot product of an fp32 activation row with an int8 weight row. Each int8
+/// is widened to fp32 in-register, so the arithmetic matches dequantize-then-
+/// dot exactly (widening int8 -> fp32 is lossless); only the memory traffic
+/// changes. Same four-accumulator structure as dot_f32, and the same reason:
+/// independent fmla chains instead of one serialized accumulator.
+float dot_q8_f32(const float* a, const int8_t* w, int64_t n) {
+#if NANO_HAS_NEON
+    float32x4_t acc0 = vdupq_n_f32(0.0f);
+    float32x4_t acc1 = vdupq_n_f32(0.0f);
+    float32x4_t acc2 = vdupq_n_f32(0.0f);
+    float32x4_t acc3 = vdupq_n_f32(0.0f);
+    int64_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        // 16 int8 -> 2x int16x8 -> 4x int32x4 -> 4x float32x4.
+        const int8x16_t q = vld1q_s8(w + i);
+        const int16x8_t lo = vmovl_s8(vget_low_s8(q));
+        const int16x8_t hi = vmovl_s8(vget_high_s8(q));
+        acc0 = vfmaq_f32(acc0, vld1q_f32(a + i),
+                         vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo))));
+        acc1 = vfmaq_f32(acc1, vld1q_f32(a + i + 4),
+                         vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo))));
+        acc2 = vfmaq_f32(acc2, vld1q_f32(a + i + 8),
+                         vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi))));
+        acc3 = vfmaq_f32(acc3, vld1q_f32(a + i + 12),
+                         vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi))));
+    }
+    float sum = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)));
+    for (; i < n; ++i) {  // tail: up to 15 elements
+        sum += a[i] * static_cast<float>(w[i]);
+    }
+    return sum;
+#else
+    float acc = 0.0f;
+    for (int64_t i = 0; i < n; ++i) {
+        acc += a[i] * static_cast<float>(w[i]);
+    }
+    return acc;
+#endif
+}
+
+/// linear_q8's serial kernel over output columns [o_begin, o_end) — the q8
+/// twin of linear_range, and funnel for both its serial and threaded paths.
+void linear_q8_range(const float* x, const int8_t* w, const float* scales,
+                     const float* bias, float* y, int64_t tokens, int64_t d_in,
+                     int64_t d_out, int64_t o_begin, int64_t o_end) {
+    for (int64_t t = 0; t < tokens; ++t) {
+        const float* row = x + t * d_in;
+        for (int64_t o = o_begin; o < o_end; ++o) {
+            const float acc = scales[o] * dot_q8_f32(row, w + o * d_in, d_in);
+            y[t * d_out + o] = bias ? acc + bias[o] : acc;
+        }
+    }
+}
+
 }  // namespace
 
 float dot(const float* a, const float* b, int64_t n) { return dot_f32(a, b, n); }
@@ -114,6 +168,20 @@ void linear(const float* x, const float* w, const float* bias, float* y,
     // so the result is bit-exact equal to the single-threaded one.
     pool().parallel_for(d_out, [&](int64_t o_begin, int64_t o_end) {
         linear_range(x, w, bias, y, tokens, d_in, d_out, o_begin, o_end);
+    });
+}
+
+void linear_q8(const float* x, const int8_t* w, const float* scales,
+               const float* bias, float* y, int64_t tokens, int64_t d_in,
+               int64_t d_out) {
+    if (tokens * d_in * d_out < kParallelThreshold) {
+        linear_q8_range(x, w, scales, bias, y, tokens, d_in, d_out, 0, d_out);
+        return;
+    }
+    // Same split as linear(): disjoint output columns, one thread per slice,
+    // identical serial arithmetic — bit-exact at any thread count.
+    pool().parallel_for(d_out, [&](int64_t o_begin, int64_t o_end) {
+        linear_q8_range(x, w, scales, bias, y, tokens, d_in, d_out, o_begin, o_end);
     });
 }
 

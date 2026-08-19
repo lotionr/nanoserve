@@ -307,7 +307,7 @@
         "Measure tok/s fp32 vs int8 with the bench harness and record both numbers",
         "Verify greedy continuations on the 3 golden prompts are unchanged (or document divergence honestly)"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F028",

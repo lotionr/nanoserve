@@ -36,7 +36,8 @@ int usage() {
                  "  nanoserve tokenize <model_dir> <text>\n"
                  "  nanoserve generate <model_dir> -p <prompt> [-n max_tokens] [--greedy]\n"
                  "                     [--temp T] [--top-k K] [--top-p P] [--seed S]\n"
-                 "                     [--threads N] [--stats]\n"
+                 "                     [--threads N] [--stats] [--int8]\n"
+                 "  nanoserve quantize <model_dir> [-o out.safetensors]\n"
                  "  nanoserve version\n",
                  static_cast<int>(kVersion.size()), kVersion.data());
     return 2;
@@ -90,6 +91,41 @@ int cmd_tokenize(const std::string& model_dir, const std::string& text) {
     return roundtrip == normalized ? 0 : 1;
 }
 
+/// Default location for the int8 weights, next to the fp32 checkpoint.
+std::string int8_path(const std::string& model_dir) {
+    return model_dir + "/model.int8.safetensors";
+}
+
+int cmd_quantize(const std::vector<std::string>& args) {
+    std::string model_dir;
+    std::string out_path;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "-o" && i + 1 < args.size()) {
+            out_path = args[++i];
+        } else if (model_dir.empty() && args[i][0] != '-') {
+            model_dir = args[i];
+        } else {
+            std::fprintf(stderr, "unknown argument: %s\n", args[i].c_str());
+            return usage();
+        }
+    }
+    if (model_dir.empty()) {
+        return usage();
+    }
+    if (out_path.empty()) {
+        out_path = int8_path(model_dir);
+    }
+
+    std::fprintf(stderr, "quantizing %s/model.safetensors -> %s ...\n",
+                 model_dir.c_str(), out_path.c_str());
+    const int n = nano::quantize_model_file(model_dir, out_path);
+    const nano::SafeTensors check(out_path);  // re-open: proves it parses
+    std::printf("quantized %d matrices to int8 (per-row scales); %zu tensors, %.1f MiB\n",
+                n, check.tensors().size(),
+                static_cast<double>(check.file_size()) / (1024.0 * 1024.0));
+    return 0;
+}
+
 int cmd_generate(const std::vector<std::string>& args) {
     // args: <model_dir> then flags. Greedy (temperature 0) is the default;
     // --temp enables sampling, shaped by --top-k/--top-p, seeded by --seed.
@@ -97,6 +133,7 @@ int cmd_generate(const std::vector<std::string>& args) {
     std::string prompt;
     int64_t max_tokens = 32;
     bool stats = false;
+    bool int8 = false;
     nano::SamplerOptions sampling = {
         .temperature = 0.0f, .top_k = 0, .top_p = 1.0f, .seed = 0};
     for (size_t i = 1; i < args.size(); ++i) {
@@ -118,6 +155,8 @@ int cmd_generate(const std::vector<std::string>& args) {
             nano::ops::set_num_threads(std::atoi(args[++i].c_str()));
         } else if (args[i] == "--stats") {
             stats = true;
+        } else if (args[i] == "--int8") {
+            int8 = true;
         } else if (model_dir.empty() && args[i][0] != '-') {
             model_dir = args[i];
         } else {
@@ -134,8 +173,20 @@ int cmd_generate(const std::vector<std::string>& args) {
     const std::vector<int32_t> prompt_ids =
         nano::apply_chat_template(tok, messages, /*add_generation_prompt=*/true);
 
-    std::fprintf(stderr, "loading model (fp32)...\n");
-    nano::Engine engine(model_dir);
+    std::string weights_file;  // empty = fp32 model.safetensors
+    if (int8) {
+        weights_file = int8_path(model_dir);
+        if (std::FILE* f = std::fopen(weights_file.c_str(), "rb"); f != nullptr) {
+            std::fclose(f);
+        } else {
+            std::fprintf(stderr,
+                         "error: %s not found — run `nanoserve quantize %s` first\n",
+                         weights_file.c_str(), model_dir.c_str());
+            return 1;
+        }
+    }
+    std::fprintf(stderr, "loading model (%s)...\n", int8 ? "int8" : "fp32");
+    nano::Engine engine(model_dir, 2048, weights_file);
     const std::vector<int32_t> stop_ids = {tok.special_id("<|im_end|>"),
                                            tok.special_id("<|endoftext|>")};
     nano::Sampler sampler(sampling, engine.model().config.vocab_size);
@@ -209,6 +260,9 @@ int main(int argc, char** argv) {
         }
         if (args[0] == "generate" && args.size() >= 2) {
             return cmd_generate(args);
+        }
+        if (args[0] == "quantize" && args.size() >= 2) {
+            return cmd_quantize(args);
         }
         return usage();
     } catch (const std::exception& e) {

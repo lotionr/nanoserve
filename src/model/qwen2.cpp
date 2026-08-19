@@ -7,6 +7,7 @@
 #include <string>
 
 #include "core/ops.hpp"
+#include "core/quant.hpp"
 #include "core/safetensors.hpp"
 #include "model/sampler.hpp"
 
@@ -27,19 +28,59 @@ std::vector<float> load_tensor(const SafeTensors& st, const std::string& name,
     return st.to_f32(info);
 }
 
+/// Fetches one weight matrix, in whichever precision the file stores it:
+/// I8 tensors come with a "<name>.scale" companion (written by `nanoserve
+/// quantize`); anything else is widened to fp32. Loading is the ONLY place
+/// the two formats differ — the forward pass just dispatches on Weight.
+Weight load_weight(const SafeTensors& st, const std::string& name, int64_t rows,
+                   int64_t cols) {
+    const TensorInfo& info = st.require(name);
+    if (info.numel() != rows * cols) {
+        throw std::runtime_error("tensor " + name + ": expected " +
+                                 std::to_string(rows * cols) + " values, file has " +
+                                 std::to_string(info.numel()));
+    }
+    Weight w;
+    w.rows = rows;
+    w.cols = cols;
+    if (info.dtype == DType::I8) {
+        const std::span<const std::byte> bytes = st.raw(info);
+        w.q8.resize(bytes.size());
+        std::memcpy(w.q8.data(), bytes.data(), bytes.size());
+        w.scales = load_tensor(st, name + ".scale", rows);
+    } else {
+        w.f32 = st.to_f32(info);
+    }
+    return w;
+}
+
+/// y[t, :] = x[t, :] @ W^T + bias, picking the fp32 or int8 kernel. The
+/// matrix knows its own shape, so call sites can't transpose dimensions.
+void linear(const Weight& w, const float* x, const float* bias, float* y,
+            int64_t tokens) {
+    if (w.quantized()) {
+        ops::linear_q8(x, w.q8.data(), w.scales.data(), bias, y, tokens, w.cols, w.rows);
+    } else {
+        ops::linear(x, w.f32.data(), bias, y, tokens, w.cols, w.rows);
+    }
+}
+
 }  // namespace
 
-Qwen2Model Qwen2Model::load(const std::string& model_dir) {
+Qwen2Model Qwen2Model::load(const std::string& model_dir,
+                            const std::string& weights_file) {
     Qwen2Model m;
     m.config = ModelConfig::from_dir(model_dir);
     const ModelConfig& c = m.config;
-    const SafeTensors st(model_dir + "/model.safetensors");
+    const std::string path =
+        weights_file.empty() ? model_dir + "/model.safetensors" : weights_file;
+    const SafeTensors st(path);
 
     const int64_t hidden = c.hidden_size;
     const int64_t q_dim = c.num_heads * c.head_dim;
     const int64_t kv_dim = c.num_kv_heads * c.head_dim;
 
-    m.embed_tokens = load_tensor(st, "model.embed_tokens.weight", c.vocab_size * hidden);
+    m.embed_tokens = load_weight(st, "model.embed_tokens.weight", c.vocab_size, hidden);
     m.final_norm = load_tensor(st, "model.norm.weight", hidden);
     if (!c.tie_word_embeddings) {
         throw std::runtime_error("untied lm_head not supported yet (Qwen2.5-0.5B ties it)");
@@ -50,20 +91,57 @@ Qwen2Model Qwen2Model::load(const std::string& model_dir) {
         const std::string p = "model.layers." + std::to_string(i) + ".";
         LayerWeights w;
         w.input_norm = load_tensor(st, p + "input_layernorm.weight", hidden);
-        w.q_w = load_tensor(st, p + "self_attn.q_proj.weight", q_dim * hidden);
+        w.q_w = load_weight(st, p + "self_attn.q_proj.weight", q_dim, hidden);
         w.q_b = load_tensor(st, p + "self_attn.q_proj.bias", q_dim);
-        w.k_w = load_tensor(st, p + "self_attn.k_proj.weight", kv_dim * hidden);
+        w.k_w = load_weight(st, p + "self_attn.k_proj.weight", kv_dim, hidden);
         w.k_b = load_tensor(st, p + "self_attn.k_proj.bias", kv_dim);
-        w.v_w = load_tensor(st, p + "self_attn.v_proj.weight", kv_dim * hidden);
+        w.v_w = load_weight(st, p + "self_attn.v_proj.weight", kv_dim, hidden);
         w.v_b = load_tensor(st, p + "self_attn.v_proj.bias", kv_dim);
-        w.o_w = load_tensor(st, p + "self_attn.o_proj.weight", hidden * q_dim);
+        w.o_w = load_weight(st, p + "self_attn.o_proj.weight", hidden, q_dim);
         w.post_norm = load_tensor(st, p + "post_attention_layernorm.weight", hidden);
-        w.gate_w = load_tensor(st, p + "mlp.gate_proj.weight", c.intermediate_size * hidden);
-        w.up_w = load_tensor(st, p + "mlp.up_proj.weight", c.intermediate_size * hidden);
-        w.down_w = load_tensor(st, p + "mlp.down_proj.weight", hidden * c.intermediate_size);
+        w.gate_w = load_weight(st, p + "mlp.gate_proj.weight", c.intermediate_size, hidden);
+        w.up_w = load_weight(st, p + "mlp.up_proj.weight", c.intermediate_size, hidden);
+        w.down_w = load_weight(st, p + "mlp.down_proj.weight", hidden, c.intermediate_size);
         m.layers.push_back(std::move(w));
     }
     return m;
+}
+
+int quantize_model_file(const std::string& model_dir, const std::string& out_path) {
+    const SafeTensors st(model_dir + "/model.safetensors");
+
+    // Everything 2D in a Qwen2 checkpoint is a projection matrix (or the
+    // embedding, which doubles as lm_head) — exactly the tensors worth
+    // quantizing. Norms and biases are 1D, tiny, and stay fp32.
+    std::vector<QuantMatrix> quantized;      // owns int8 data until write
+    std::vector<std::vector<float>> kept;    // owns fp32 data until write
+    std::vector<SaveTensor> out;
+    int n_quantized = 0;
+
+    // Reserve so the data pointers taken below never move on push_back.
+    quantized.reserve(st.tensors().size());
+    kept.reserve(st.tensors().size());
+
+    for (const TensorInfo& t : st.tensors()) {
+        const std::vector<float> f32 = st.to_f32(t);
+        if (t.shape.size() == 2) {
+            quantized.push_back(quantize_rows(f32.data(), t.shape[0], t.shape[1]));
+            const QuantMatrix& q = quantized.back();
+            out.push_back({t.name, DType::I8, t.shape, q.q.data(), q.q.size()});
+            out.push_back({t.name + ".scale", DType::F32, {q.rows}, q.scales.data(),
+                           q.scales.size() * sizeof(float)});
+            ++n_quantized;
+        } else {
+            kept.push_back(f32);
+            out.push_back({t.name, DType::F32, t.shape, kept.back().data(),
+                           kept.back().size() * sizeof(float)});
+        }
+    }
+
+    write_safetensors(out_path, out,
+                      {{"format", "nanoserve int8 per-row (F027)"},
+                       {"source", model_dir + "/model.safetensors"}});
+    return n_quantized;
 }
 
 KvCache::KvCache(const ModelConfig& config, int64_t max_seq)
@@ -96,7 +174,6 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
     const int64_t H = c.hidden_size;
     const int64_t D = c.head_dim;
     const int64_t q_dim = c.num_heads * D;
-    const int64_t kv_dim = c.num_kv_heads * D;
     // GQA: this many consecutive query heads share one k/v head.
     const int64_t group = c.num_heads / c.num_kv_heads;
     const float eps = static_cast<float>(c.rms_norm_eps);
@@ -113,15 +190,13 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
 
     // --- attention block: hidden += o_proj(attend(rope(qkv(norm(hidden))))) ---
     ops::rmsnorm(hidden, w.input_norm.data(), normed.data(), tokens, H, eps);
-    ops::linear(normed.data(), w.q_w.data(), w.q_b.data(), q.data(), tokens, H, q_dim);
+    linear(w.q_w, normed.data(), w.q_b.data(), q.data(), tokens);
     for (int64_t t = 0; t < tokens; ++t) {
         // K and V rows are computed straight into the cache — after this
         // loop the cache holds positions [0, pos0 + tokens).
         const float* in = normed.data() + t * H;
-        ops::linear(in, w.k_w.data(), w.k_b.data(), cache.k_row(layer_idx, pos0 + t), 1,
-                    H, kv_dim);
-        ops::linear(in, w.v_w.data(), w.v_b.data(), cache.v_row(layer_idx, pos0 + t), 1,
-                    H, kv_dim);
+        linear(w.k_w, in, w.k_b.data(), cache.k_row(layer_idx, pos0 + t), 1);
+        linear(w.v_w, in, w.v_b.data(), cache.v_row(layer_idx, pos0 + t), 1);
         ops::rope(q.data() + t * q_dim, c.num_heads, D, pos0 + t, theta);
         ops::rope(cache.k_row(layer_idx, pos0 + t), c.num_kv_heads, D, pos0 + t, theta);
     }
@@ -149,7 +224,7 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
             }
         }
     }
-    ops::linear(attn.data(), w.o_w.data(), nullptr, proj.data(), tokens, q_dim, H);
+    linear(w.o_w, attn.data(), nullptr, proj.data(), tokens);
     ops::add(hidden, proj.data(), hidden, tokens * H);
 
     // --- MLP block: hidden += down(silu(gate(norm(hidden))) * up(norm(hidden))) ---
@@ -157,25 +232,37 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
     std::vector<float>& gate = scratch.gate;
     std::vector<float>& up = scratch.up;
     ops::rmsnorm(hidden, w.post_norm.data(), normed.data(), tokens, H, eps);
-    ops::linear(normed.data(), w.gate_w.data(), nullptr, gate.data(), tokens, H, I);
-    ops::linear(normed.data(), w.up_w.data(), nullptr, up.data(), tokens, H, I);
+    linear(w.gate_w, normed.data(), nullptr, gate.data(), tokens);
+    linear(w.up_w, normed.data(), nullptr, up.data(), tokens);
     ops::silu(gate.data(), tokens * I);
     ops::mul(gate.data(), up.data(), gate.data(), tokens * I);
-    ops::linear(gate.data(), w.down_w.data(), nullptr, proj.data(), tokens, I, H);
+    linear(w.down_w, gate.data(), nullptr, proj.data(), tokens);
     ops::add(hidden, proj.data(), hidden, tokens * H);
 }
 
-Engine::Engine(const std::string& model_dir, int64_t max_seq)
-    : model_(Qwen2Model::load(model_dir)), cache_(model_.config, max_seq) {
+Engine::Engine(const std::string& model_dir, int64_t max_seq,
+               const std::string& weights_file)
+    : model_(Qwen2Model::load(model_dir, weights_file)), cache_(model_.config, max_seq) {
     logits_.resize(static_cast<size_t>(model_.config.vocab_size));
 }
 
 void Engine::embed(std::span<const int32_t> ids, float* out) const {
     const int64_t H = model_.config.hidden_size;
+    const Weight& e = model_.embed_tokens;
     for (size_t i = 0; i < ids.size(); ++i) {
-        const float* row = model_.embed_tokens.data() + int64_t{ids[i]} * H;
-        std::memcpy(out + static_cast<int64_t>(i) * H, row,
-                    sizeof(float) * static_cast<size_t>(H));
+        float* dst = out + static_cast<int64_t>(i) * H;
+        if (e.quantized()) {
+            // Dequantize the one looked-up row: q * its row scale. This is
+            // the only quantization error the embedding lookup introduces.
+            const int8_t* row = e.q8.data() + int64_t{ids[i]} * H;
+            const float scale = e.scales[static_cast<size_t>(ids[i])];
+            for (int64_t j = 0; j < H; ++j) {
+                dst[j] = static_cast<float>(row[j]) * scale;
+            }
+        } else {
+            std::memcpy(dst, e.f32.data() + int64_t{ids[i]} * H,
+                        sizeof(float) * static_cast<size_t>(H));
+        }
     }
 }
 
@@ -205,8 +292,7 @@ std::span<const float> Engine::forward(std::span<const int32_t> ids) {
     float* normed = scratch_.final_normed.data();
     ops::rmsnorm(hidden_.data() + (tokens - 1) * H, model_.final_norm.data(),
                  normed, 1, H, static_cast<float>(c.rms_norm_eps));
-    ops::linear(normed, model_.embed_tokens.data(), nullptr, logits_.data(), 1, H,
-                c.vocab_size);
+    linear(model_.embed_tokens, normed, nullptr, logits_.data(), 1);
     return logits_;
 }
 

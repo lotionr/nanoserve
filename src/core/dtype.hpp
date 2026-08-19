@@ -17,6 +17,7 @@ enum class DType : uint8_t {
     BF16,
     I64,
     I32,
+    I8,
     U8,
 };
 
@@ -32,6 +33,7 @@ inline size_t dtype_size(DType t) {
             return 8;
         case DType::I32:
             return 4;
+        case DType::I8:
         case DType::U8:
             return 1;
     }
@@ -50,6 +52,8 @@ inline std::string_view dtype_name(DType t) {
             return "I64";
         case DType::I32:
             return "I32";
+        case DType::I8:
+            return "I8";
         case DType::U8:
             return "U8";
     }
@@ -62,6 +66,7 @@ inline DType dtype_from_string(std::string_view s) {
     if (s == "BF16") return DType::BF16;
     if (s == "I64") return DType::I64;
     if (s == "I32") return DType::I32;
+    if (s == "I8") return DType::I8;
     if (s == "U8") return DType::U8;
     throw std::runtime_error("unsupported dtype: " + std::string(s));
 }
