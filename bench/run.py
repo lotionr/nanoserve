@@ -25,7 +25,10 @@ Methodology (and its honest caveats):
   scales, llama.cpp Q8_0 uses per-32-block scales (finer, slightly more
   bytes/weight). fp32 vs f32-GGUF is exact like-for-like — the GGUF is
   converted from the very same safetensors file.
-- Both engines run CPU-only (the llama.cpp build has Metal disabled).
+- llama.cpp runs CPU-only (its build pins Metal OFF). nanoserve rows carry
+  a backend column (F033): cpu, or metal — linear projections above the
+  dispatch floor on the M-series GPU, everything else (attention, norms,
+  small projections) still on the CPU at the same thread count.
 """
 
 import argparse
@@ -95,10 +98,15 @@ def nanoserve_version() -> dict:
     return {"engine_version": f"nanoserve@{commit}"}
 
 
-def bench_nanoserve(precision: str, repeats: int, threads: int) -> dict:
+def bench_nanoserve(precision: str, repeats: int, threads: int,
+                    backend: str = "cpu") -> dict:
     import nanoserve
 
     nanoserve.set_num_threads(threads)
+    # Backend before Engine: weights register with the GPU at construction
+    # (metal rows). The thread count still matters on metal — attention,
+    # norms, and sub-floor projections stay on the CPU.
+    nanoserve.set_backend(backend)
     engine = nanoserve.Engine(MODEL_DIR, int8=(precision == "int8"))
 
     engine.generate(PROMPT, max_tokens=GEN_TOKENS)  # warmup (page-in, pool spinup)
@@ -122,6 +130,7 @@ def bench_nanoserve(precision: str, repeats: int, threads: int) -> dict:
     return {
         "engine": "nanoserve",
         "precision": precision,
+        "backend": backend,
         "threads": threads,
         "prompt_tokens": PROMPT_TOKENS,
         "gen_tokens": generated,
@@ -162,6 +171,7 @@ def bench_llamacpp(precision: str, repeats: int, threads: int) -> dict:
     return {
         "engine": "llama.cpp",
         "precision": precision,
+        "backend": "cpu",   # the baseline build has Metal disabled
         "threads": threads,
         "prompt_tokens": PROMPT_TOKENS,
         "gen_tokens": GEN_TOKENS,
@@ -193,7 +203,7 @@ def flag(stat: dict) -> str:
 
 def print_table(rows: list[dict]) -> None:
     header = (
-        f"{'engine':<12} {'precision':<10} {'threads':>7} "
+        f"{'engine':<12} {'precision':<10} {'backend':<8} {'threads':>7} "
         f"{'prefill tok/s':>18} {'decode tok/s':>18} {'ttft ms':>10}"
     )
     print(header)
@@ -201,7 +211,8 @@ def print_table(rows: list[dict]) -> None:
     for r in rows:
         pf, dc = r["prefill_tps"], r["decode_tps"]
         print(
-            f"{r['engine']:<12} {r['precision']:<10} {r['threads']:>7} "
+            f"{r['engine']:<12} {r['precision']:<10} "
+            f"{r.get('backend', 'cpu'):<8} {r['threads']:>7} "
             f"{pf['mean']:>10.1f} ± {pf['std']:>5.1f} "
             f"{dc['mean']:>10.1f} ± {dc['std']:>5.1f} "
             f"{r['ttft_ms']['mean']:>10.1f}"
@@ -222,16 +233,24 @@ def main() -> None:
 
     plan = []
     if args.engine in ("nanoserve", "all"):
-        plan += [("nanoserve", "fp32"), ("nanoserve", "int8")]
+        plan += [("nanoserve", "fp32", "cpu"), ("nanoserve", "int8", "cpu")]
+        import nanoserve
+
+        # Metal rows (F033) whenever this machine has a GPU: same workload,
+        # same threads (attention/norms still run on the CPU), same repeats.
+        if nanoserve.metal_available():
+            plan += [("nanoserve", "fp32", "metal"), ("nanoserve", "int8", "metal")]
     if args.engine in ("llama.cpp", "all"):
-        plan += [("llama.cpp", "f32"), ("llama.cpp", "q8_0")]
+        plan += [("llama.cpp", "f32", "cpu"), ("llama.cpp", "q8_0", "cpu")]
 
     rows = []
-    for engine, precision in plan:
-        print(f"benchmarking {engine} {precision} "
-              f"(threads={threads}, repeats={args.repeats}) ...", flush=True)
-        fn = bench_nanoserve if engine == "nanoserve" else bench_llamacpp
-        rows.append(fn(precision, args.repeats, threads))
+    for engine, precision, backend in plan:
+        print(f"benchmarking {engine} {precision} ({backend}, "
+              f"threads={threads}, repeats={args.repeats}) ...", flush=True)
+        if engine == "nanoserve":
+            rows.append(bench_nanoserve(precision, args.repeats, threads, backend))
+        else:
+            rows.append(bench_llamacpp(precision, args.repeats, threads))
 
     result = {
         "created_utc": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),

@@ -14,11 +14,21 @@ from nanoserve._nanoserve import (
     GenerateResult,
     TokenStream,
     __version__,
+    metal_available,
+    set_backend,
     set_num_threads,
 )
 from nanoserve._nanoserve import Engine as _CEngine
 
-__all__ = ["Engine", "GenerateResult", "TokenStream", "set_num_threads", "__version__"]
+__all__ = [
+    "Engine",
+    "GenerateResult",
+    "TokenStream",
+    "metal_available",
+    "set_backend",
+    "set_num_threads",
+    "__version__",
+]
 
 
 class Engine:

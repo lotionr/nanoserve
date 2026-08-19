@@ -37,6 +37,7 @@ int usage() {
                  "  nanoserve generate <model_dir> -p <prompt> [-n max_tokens] [--greedy]\n"
                  "                     [--temp T] [--top-k K] [--top-p P] [--seed S]\n"
                  "                     [--threads N] [--stats] [--int8]\n"
+                 "                     [--backend cpu|metal]  (default: cpu)\n"
                  "  nanoserve quantize <model_dir> [-o out.safetensors]\n"
                  "  nanoserve version\n",
                  static_cast<int>(kVersion.size()), kVersion.data());
@@ -134,6 +135,7 @@ int cmd_generate(const std::vector<std::string>& args) {
     int64_t max_tokens = 32;
     bool stats = false;
     bool int8 = false;
+    std::string backend = "cpu";
     nano::SamplerOptions sampling = {
         .temperature = 0.0f, .top_k = 0, .top_p = 1.0f, .seed = 0};
     for (size_t i = 1; i < args.size(); ++i) {
@@ -157,6 +159,8 @@ int cmd_generate(const std::vector<std::string>& args) {
             stats = true;
         } else if (args[i] == "--int8") {
             int8 = true;
+        } else if (args[i] == "--backend" && i + 1 < args.size()) {
+            backend = args[++i];
         } else if (model_dir.empty() && args[i][0] != '-') {
             model_dir = args[i];
         } else {
@@ -185,7 +189,21 @@ int cmd_generate(const std::vector<std::string>& args) {
             return 1;
         }
     }
-    std::fprintf(stderr, "loading model (%s)...\n", int8 ? "int8" : "fp32");
+    // Backend BEFORE the Engine: construction registers the weights with
+    // the GPU (zero-copy on unified memory) only if metal is already
+    // selected. CPU is the default; the README bench table records how the
+    // two compare on this machine.
+    if (backend == "metal") {
+        if (!nano::ops::set_backend(nano::ops::Backend::metal)) {
+            std::fprintf(stderr, "error: --backend metal: no usable Metal device\n");
+            return 1;
+        }
+    } else if (backend != "cpu") {
+        std::fprintf(stderr, "unknown backend: %s (cpu|metal)\n", backend.c_str());
+        return usage();
+    }
+    std::fprintf(stderr, "loading model (%s, %s)...\n", int8 ? "int8" : "fp32",
+                 backend.c_str());
     nano::Engine engine(model_dir, 2048, weights_file);
     const std::vector<int32_t> stop_ids = {tok.special_id("<|im_end|>"),
                                            tok.special_id("<|endoftext|>")};

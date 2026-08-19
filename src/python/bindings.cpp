@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "core/metal.hpp"
 #include "core/ops.hpp"
 #include "model/chat_template.hpp"
 #include "model/qwen2.hpp"
@@ -248,6 +249,30 @@ PYBIND11_MODULE(_nanoserve, m) {
 
     m.def("set_num_threads", &nano::ops::set_num_threads, py::arg("n"),
           "Thread count for matmuls: 1 = serial, 0 = one per hardware thread.");
+
+    // Backend selection (F033). Raises on an impossible request instead of
+    // returning False: a benchmark that silently measured the CPU while
+    // labeling it 'metal' would be worse than a crash. Select the backend
+    // BEFORE constructing an Engine (weights register with the GPU at
+    // construction).
+    m.def(
+        "set_backend",
+        [](const std::string& name) {
+            if (name == "cpu") {
+                nano::ops::set_backend(nano::ops::Backend::cpu);
+            } else if (name == "metal") {
+                if (!nano::ops::set_backend(nano::ops::Backend::metal)) {
+                    throw std::runtime_error("no usable Metal device");
+                }
+            } else {
+                throw std::invalid_argument("backend must be 'cpu' or 'metal'");
+            }
+        },
+        py::arg("name"),
+        "Where matmuls run: 'cpu' (default) or 'metal' (M-series GPU).");
+    m.def(
+        "metal_available", [] { return nano::metal::available(); },
+        "True if a Metal device exists and the GPU kernels compiled.");
 
     py::class_<GenerateResult>(m, "GenerateResult")
         .def_readonly("text", &GenerateResult::text)
