@@ -148,7 +148,7 @@
         "Verify special tokens encode to their single reserved ids, never split into bytes",
         "Verify the chat-template helper's ids match the HF reference ids"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F014",

@@ -56,6 +56,46 @@ SPECIALS_CASES = [
     "before<|im_start|>after",
 ]
 
+# Chat-template cases for F013. Reference ids come from HF transformers'
+# apply_chat_template on the real tokenizer_config.json jinja template; the
+# C++ helper re-implements only the no-tools branch of that template.
+CHAT_CASES = [
+    {
+        "name": "single user turn, default system",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "add_generation_prompt": True,
+    },
+    {
+        "name": "explicit system message",
+        "messages": [
+            {"role": "system", "content": "You are a terse assistant."},
+            {"role": "user", "content": "What is a KV cache?"},
+        ],
+        "add_generation_prompt": True,
+    },
+    {
+        "name": "multi-turn with assistant history",
+        "messages": [
+            {"role": "user", "content": "Name a prime number."},
+            {"role": "assistant", "content": "7"},
+            {"role": "user", "content": "Another one, please!"},
+        ],
+        "add_generation_prompt": True,
+    },
+    {
+        "name": "no generation prompt",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "add_generation_prompt": False,
+    },
+    {
+        "name": "content with newlines and punctuation",
+        "messages": [
+            {"role": "user", "content": "def f(x):\n    return x * 2\n\nExplain, briefly?"},
+        ],
+        "add_generation_prompt": True,
+    },
+]
+
 
 def gen_tokenizer_golden() -> None:
     tok = Tokenizer.from_file(str(MODEL_DIR / "tokenizer.json"))
@@ -75,6 +115,35 @@ def gen_tokenizer_golden() -> None:
     path = DATA_DIR / "tokenizer_golden.json"
     path.write_text(json.dumps(out, indent=1))
     print(f"wrote {path} ({len(cases)} cases, {len(specials)} specials)")
+
+
+def gen_chat_golden() -> None:
+    """Reference prompt ids from HF apply_chat_template (F013)."""
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(str(MODEL_DIR))
+    cases = []
+    for case in CHAT_CASES:
+        ids = tok.apply_chat_template(
+            case["messages"],
+            tokenize=True,
+            add_generation_prompt=case["add_generation_prompt"],
+        )["input_ids"]
+        cases.append(
+            {
+                "name": case["name"],
+                "messages": case["messages"],
+                "add_generation_prompt": case["add_generation_prompt"],
+                "ids": ids,
+            }
+        )
+    out = {
+        "source": "Qwen/Qwen2.5-0.5B-Instruct via transformers apply_chat_template",
+        "cases": cases,
+    }
+    path = DATA_DIR / "chat_golden.json"
+    path.write_text(json.dumps(out, indent=1))
+    print(f"wrote {path} ({len(cases)} cases)")
 
 
 def gen_embed_golden() -> None:
@@ -116,6 +185,7 @@ def gen_embed_golden() -> None:
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     gen_tokenizer_golden()
+    gen_chat_golden()
     gen_embed_golden()
 
 

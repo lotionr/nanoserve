@@ -22,6 +22,7 @@ add_library(nanoserve_core STATIC
     src/core/json.cpp
     src/core/mmap_file.cpp
     src/core/safetensors.cpp
+    src/model/chat_template.cpp
     src/model/config.cpp
     src/model/tokenizer.cpp
 )

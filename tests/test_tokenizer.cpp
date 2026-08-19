@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/json.hpp"
+#include "model/chat_template.hpp"
 #include "testing.hpp"
 
 int main() {
@@ -64,6 +65,40 @@ int main() {
         NANO_CHECK_MSG(match, "encode_with_specials mismatch on: %s", text.c_str());
         NANO_CHECK_MSG(tok.decode(got) == text, "specials roundtrip mismatch on: %s",
                        text.c_str());
+    }
+
+    // F013: chat-template helper matches HF apply_chat_template token ids.
+    const nano::json::Value chat_golden =
+        nano::json::parse(nano::json::read_file("tests/data/chat_golden.json"));
+    for (const auto& c : chat_golden.at("cases").items()) {
+        const std::string& name = c.at("name").as_string();
+
+        std::vector<nano::ChatMessage> messages;
+        for (const auto& m : c.at("messages").items()) {
+            messages.push_back({m.at("role").as_string(), m.at("content").as_string()});
+        }
+        const bool gen_prompt = c.at("add_generation_prompt").as_bool();
+
+        const std::vector<int32_t> got = nano::apply_chat_template(tok, messages, gen_prompt);
+        const auto& want = c.at("ids").items();
+        bool match = got.size() == want.size();
+        if (match) {
+            for (size_t i = 0; i < got.size(); ++i) {
+                match = match && got[i] == static_cast<int32_t>(want[i].as_int());
+            }
+        }
+        if (!match) {
+            std::fprintf(stderr, "  got :");
+            for (int32_t id : got) {
+                std::fprintf(stderr, " %d", id);
+            }
+            std::fprintf(stderr, "\n  want:");
+            for (const auto& id : want) {
+                std::fprintf(stderr, " %lld", static_cast<long long>(id.as_int()));
+            }
+            std::fprintf(stderr, "\n");
+        }
+        NANO_CHECK_MSG(match, "chat template mismatch on: %s", name.c_str());
     }
 
     return nano::testing::finish("test_tokenizer");

@@ -1,0 +1,254 @@
+{
+ "source": "Qwen/Qwen2.5-0.5B-Instruct via transformers apply_chat_template",
+ "cases": [
+  {
+   "name": "single user turn, default system",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hello"
+    }
+   ],
+   "add_generation_prompt": true,
+   "ids": [
+    151644,
+    8948,
+    198,
+    2610,
+    525,
+    1207,
+    16948,
+    11,
+    3465,
+    553,
+    54364,
+    14817,
+    13,
+    1446,
+    525,
+    264,
+    10950,
+    17847,
+    13,
+    151645,
+    198,
+    151644,
+    872,
+    198,
+    9707,
+    151645,
+    198,
+    151644,
+    77091,
+    198
+   ]
+  },
+  {
+   "name": "explicit system message",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are a terse assistant."
+    },
+    {
+     "role": "user",
+     "content": "What is a KV cache?"
+    }
+   ],
+   "add_generation_prompt": true,
+   "ids": [
+    151644,
+    8948,
+    198,
+    2610,
+    525,
+    264,
+    50537,
+    17847,
+    13,
+    151645,
+    198,
+    151644,
+    872,
+    198,
+    3838,
+    374,
+    264,
+    84648,
+    6500,
+    30,
+    151645,
+    198,
+    151644,
+    77091,
+    198
+   ]
+  },
+  {
+   "name": "multi-turn with assistant history",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Name a prime number."
+    },
+    {
+     "role": "assistant",
+     "content": "7"
+    },
+    {
+     "role": "user",
+     "content": "Another one, please!"
+    }
+   ],
+   "add_generation_prompt": true,
+   "ids": [
+    151644,
+    8948,
+    198,
+    2610,
+    525,
+    1207,
+    16948,
+    11,
+    3465,
+    553,
+    54364,
+    14817,
+    13,
+    1446,
+    525,
+    264,
+    10950,
+    17847,
+    13,
+    151645,
+    198,
+    151644,
+    872,
+    198,
+    675,
+    264,
+    10250,
+    1372,
+    13,
+    151645,
+    198,
+    151644,
+    77091,
+    198,
+    22,
+    151645,
+    198,
+    151644,
+    872,
+    198,
+    14037,
+    825,
+    11,
+    4486,
+    0,
+    151645,
+    198,
+    151644,
+    77091,
+    198
+   ]
+  },
+  {
+   "name": "no generation prompt",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Hi"
+    }
+   ],
+   "add_generation_prompt": false,
+   "ids": [
+    151644,
+    8948,
+    198,
+    2610,
+    525,
+    1207,
+    16948,
+    11,
+    3465,
+    553,
+    54364,
+    14817,
+    13,
+    1446,
+    525,
+    264,
+    10950,
+    17847,
+    13,
+    151645,
+    198,
+    151644,
+    872,
+    198,
+    13048,
+    151645,
+    198
+   ]
+  },
+  {
+   "name": "content with newlines and punctuation",
+   "messages": [
+    {
+     "role": "user",
+     "content": "def f(x):\n    return x * 2\n\nExplain, briefly?"
+    }
+   ],
+   "add_generation_prompt": true,
+   "ids": [
+    151644,
+    8948,
+    198,
+    2610,
+    525,
+    1207,
+    16948,
+    11,
+    3465,
+    553,
+    54364,
+    14817,
+    13,
+    1446,
+    525,
+    264,
+    10950,
+    17847,
+    13,
+    151645,
+    198,
+    151644,
+    872,
+    198,
+    750,
+    282,
+    2075,
+    982,
+    262,
+    470,
+    856,
+    353,
+    220,
+    17,
+    271,
+    840,
+    20772,
+    11,
+    26753,
+    30,
+    151645,
+    198,
+    151644,
+    77091,
+    198
+   ]
+  }
+ ]
+}
