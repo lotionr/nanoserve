@@ -6,10 +6,11 @@ quantization, and benchmarking — with no ML framework underneath. The core is 
 C++20 with zero third-party dependencies; the benchmark harness and user-facing API
 are Python.
 
-This is a learning-in-public project. Everything here is measured, not claimed:
+This is a learning-in-public project, built with heavy use of AI coding agents under
+my direction and review. Everything here is measured, not claimed:
 **every benchmark number in this README is machine-generated from a run of the
 reproducible suite in `bench/` — none are typed by hand**, and every feature listed
-as done has a test behind it (`feature_list.json` tracks exactly what passes today).
+as done has a test behind it.
 
 ## Why
 
@@ -35,7 +36,7 @@ scripts/download_model.sh   # -> models/qwen2.5-0.5b-instruct/ (git-ignored)
 
 ## Status
 
-Current state (kept honest; see `feature_list.json` for the full sequenced list):
+Current state (kept honest — every box below has a passing test behind it):
 
 - [x] safetensors loader — mmap, header parsing, bounds validation, bf16→fp32
 - [x] Model config parsing (`config.json` → typed struct)

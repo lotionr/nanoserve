@@ -12,8 +12,6 @@ a public, tested, benchmarked artifact. Target model: Qwen2.5-0.5B-Instruct
 
 ## How to work on this project
 
-This project uses the long-running harness pattern (same as finder_overlay / IntentGate).
-
 **Always start every session by running:**
 ```bash
 bash init.sh
@@ -24,18 +22,14 @@ It verifies the toolchain, builds warnings-as-errors, and runs ctest.
 
 | File | Purpose |
 |------|---------|
-| `feature_list.json` | Single source of truth for all features. Only change `passes` field. |
-| `claude-progress.txt` | Session-by-session log. Read at start, update at end of every session. |
 | `init.sh` | Env check + clean build + ctest. Always run first. |
 | `scripts/download_model.sh` | Fetches Qwen2.5-0.5B-Instruct into `models/` (git-ignored). |
 | `scripts/gen_golden.py` | Regenerates golden test vectors in `tests/data/` (needs `.venv`). |
 
 ## Critical rules
 
-- Work on **one feature at a time**, in feature_list.json order (dependencies flow forward)
-- **Never mark a feature as passing without its verification steps actually passing**
-- Always end a session with **git commits** (small, conventional) and a **progress log update**
-- Never edit `feature_list.json` except to flip `"passes": false` → `"passes": true`
+- **Never mark a feature as done without its verification steps actually passing**
+- Always end a session with **git commits** (small, conventional)
 - The build must be **green (ctest passing) at the end of every session**
 - **No benchmark numbers anywhere (README, comments, commits) unless produced by the
   bench harness on this machine** — placeholders like [X] until then
@@ -44,7 +38,6 @@ It verifies the toolchain, builds warnings-as-errors, and runs ctest.
   justify each optimization with a measured number.
 - The story this repo tells is *inference systems understanding* (KV cache, quantization,
   serving, benchmarking) — not "C++ expertise". Keep README/docs framed that way.
-- Local git only for now: **no GitHub repo creation, no pushes** until the user says so.
 
 ## Tech stack
 

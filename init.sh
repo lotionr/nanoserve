@@ -25,17 +25,7 @@ if ! command -v c++ &>/dev/null && ! command -v clang++ &>/dev/null; then
 fi
 echo "compiler: $(c++ --version | head -1)"
 
-# 2. Harness files
-for f in feature_list.json claude-progress.txt CLAUDE.md; do
-    if [ -f "$f" ]; then
-        echo "  ok $f"
-    else
-        echo "  MISSING: $f"
-        exit 1
-    fi
-done
-
-# 3. Model weights (informational — tests skip cleanly without them)
+# 2. Model weights (informational — tests skip cleanly without them)
 MODEL_DIR="models/qwen2.5-0.5b-instruct"
 if [ -s "$MODEL_DIR/model.safetensors" ]; then
     echo "model:    present ($MODEL_DIR, $(du -h "$MODEL_DIR/model.safetensors" | cut -f1))"
@@ -56,4 +46,3 @@ ctest --test-dir build --output-on-failure
 
 echo ""
 echo "=== init OK: build green, tests green. ==="
-echo "Next: read claude-progress.txt, pick the first feature with \"passes\": false in feature_list.json."
