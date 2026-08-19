@@ -8,21 +8,24 @@
     11,
     1879,
     0
-   ]
+   ],
+   "decoded": "Hello, world!"
   },
   {
    "text": "hello world",
    "ids": [
     14990,
     1879
-   ]
+   ],
+   "decoded": "hello world"
   },
   {
    "text": " leading space",
    "ids": [
     6388,
     3550
-   ]
+   ],
+   "decoded": " leading space"
   },
   {
    "text": "trailing space ",
@@ -31,7 +34,8 @@
     14277,
     3550,
     220
-   ]
+   ],
+   "decoded": "trailing space "
   },
   {
    "text": "The quick brown fox jumps over the lazy dog.",
@@ -46,7 +50,8 @@
     15678,
     5562,
     13
-   ]
+   ],
+   "decoded": "The quick brown fox jumps over the lazy dog."
   },
   {
    "text": "I'm sure it's fine \u2014 we've seen worse, they'll manage, you'd agree.",
@@ -71,7 +76,8 @@
     4172,
     7503,
     13
-   ]
+   ],
+   "decoded": "I'm sure it's fine \u2014 we've seen worse, they'll manage, you'd agree."
   },
   {
    "text": "DON'T SHOUT'RE WEIRD 'll 'D",
@@ -87,7 +93,8 @@
     654,
     364,
     35
-   ]
+   ],
+   "decoded": "DON'T SHOUT'RE WEIRD 'll 'D"
   },
   {
    "text": "x = (a + b) * c / d - e;",
@@ -106,7 +113,8 @@
     481,
     384,
     26
-   ]
+   ],
+   "decoded": "x = (a + b) * c / d - e;"
   },
   {
    "text": "def f(x):\n    return x * 2\n",
@@ -122,7 +130,8 @@
     220,
     17,
     198
-   ]
+   ],
+   "decoded": "def f(x):\n    return x * 2\n"
   },
   {
    "text": "line one\nline two\r\nline three\n\n\nend",
@@ -137,7 +146,8 @@
     2326,
     1406,
     408
-   ]
+   ],
+   "decoded": "line one\nline two\r\nline three\n\n\nend"
   },
   {
    "text": "tabs\tand\tspaces   mixed \t \n ok",
@@ -151,7 +161,8 @@
     7018,
     715,
     5394
-   ]
+   ],
+   "decoded": "tabs\tand\tspaces   mixed \t \n ok"
   },
   {
    "text": "1234567890",
@@ -166,7 +177,8 @@
     23,
     24,
     15
-   ]
+   ],
+   "decoded": "1234567890"
   },
   {
    "text": "In 2026, 3.14159 is still pi; 1,000,000 > 999999.",
@@ -209,7 +221,8 @@
     24,
     24,
     13
-   ]
+   ],
+   "decoded": "In 2026, 3.14159 is still pi; 1,000,000 > 999999."
   },
   {
    "text": "version v2.5.0-rc.1+build.42",
@@ -230,7 +243,8 @@
     13,
     19,
     17
-   ]
+   ],
+   "decoded": "version v2.5.0-rc.1+build.42"
   },
   {
    "text": "email@example.com and https://example.com/path?q=1&r=2#frag",
@@ -252,7 +266,8 @@
     17,
     2,
     33198
-   ]
+   ],
+   "decoded": "email@example.com and https://example.com/path?q=1&r=2#frag"
   },
   {
    "text": "!@#$%^&*()_+-=[]{}|;':\",./<>?",
@@ -275,7 +290,8 @@
     1725,
     21122,
     30
-   ]
+   ],
+   "decoded": "!@#$%^&*()_+-=[]{}|;':\",./<>?"
   },
   {
    "text": "...ellipsis... and -- dashes --- everywhere",
@@ -288,7 +304,8 @@
     87546,
     12448,
     16852
-   ]
+   ],
+   "decoded": "...ellipsis... and -- dashes --- everywhere"
   },
   {
    "text": "  double  spaces   triple   ",
@@ -300,25 +317,29 @@
     256,
     23725,
     262
-   ]
+   ],
+   "decoded": "  double  spaces   triple   "
   },
   {
    "text": "a",
    "ids": [
     64
-   ]
+   ],
+   "decoded": "a"
   },
   {
    "text": " ",
    "ids": [
     220
-   ]
+   ],
+   "decoded": " "
   },
   {
    "text": "\n",
    "ids": [
     198
-   ]
+   ],
+   "decoded": "\n"
   },
   {
    "text": "snake_case camelCase PascalCase SCREAMING_SNAKE kebab-case",
@@ -338,7 +359,8 @@
     1962,
     47722,
     38485
-   ]
+   ],
+   "decoded": "snake_case camelCase PascalCase SCREAMING_SNAKE kebab-case"
   },
   {
    "text": "C++ isn't C, and C# isn't C++ either.",
@@ -358,7 +380,8 @@
     1027,
     2987,
     13
-   ]
+   ],
+   "decoded": "C++ isn't C, and C# isn't C++ either."
   },
   {
    "text": "wait... what?! (really?) [yes] {no} <maybe>",
@@ -379,7 +402,8 @@
     366,
     36760,
     29
-   ]
+   ],
+   "decoded": "wait... what?! (really?) [yes] {no} <maybe>"
   },
   {
    "text": "The KV cache stores keys/values per layer: 24 layers x 2 heads x 64 dims.",
@@ -407,7 +431,359 @@
     19,
     40888,
     13
-   ]
+   ],
+   "decoded": "The KV cache stores keys/values per layer: 24 layers x 2 heads x 64 dims."
+  }
+ ],
+ "unicode_cases": [
+  {
+   "text": "\u4e2d\u6587\u5206\u8bcd\u6d4b\u8bd5\u3002",
+   "ids": [
+    104811,
+    17177,
+    99689,
+    81705,
+    1773
+   ],
+   "decoded": "\u4e2d\u6587\u5206\u8bcd\u6d4b\u8bd5\u3002"
+  },
+  {
+   "text": "\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8\u3001\u30ab\u30bf\u30ab\u30ca\u3082\u3042\u308b\u3002",
+   "ids": [
+    101059,
+    102819,
+    15767,
+    56833,
+    61803,
+    70534,
+    5373,
+    70393,
+    46207,
+    70393,
+    95352,
+    129627,
+    1773
+   ],
+   "decoded": "\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8\u3001\u30ab\u30bf\u30ab\u30ca\u3082\u3042\u308b\u3002"
+  },
+  {
+   "text": "\ud55c\uad6d\uc5b4 \ud14d\uc2a4\ud2b8\uc785\ub2c8\ub2e4.",
+   "ids": [
+    23573,
+    124785,
+    31079,
+    10764,
+    44104,
+    53189,
+    78952,
+    13
+   ],
+   "decoded": "\ud55c\uad6d\uc5b4 \ud14d\uc2a4\ud2b8\uc785\ub2c8\ub2e4."
+  },
+  {
+   "text": "\u041f\u0440\u0438\u0432\u0435\u0442, \u043c\u0438\u0440! \u0420\u0443\u0441\u0441\u043a\u0438\u0439 \u0442\u0435\u043a\u0441\u0442.",
+   "ids": [
+    53645,
+    26991,
+    8178,
+    11,
+    137144,
+    0,
+    140869,
+    126302,
+    70895,
+    13
+   ],
+   "decoded": "\u041f\u0440\u0438\u0432\u0435\u0442, \u043c\u0438\u0440! \u0420\u0443\u0441\u0441\u043a\u0438\u0439 \u0442\u0435\u043a\u0441\u0442."
+  },
+  {
+   "text": "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac \u03ba\u03b5\u03af\u03bc\u03b5\u03bd\u03b1 \u03b5\u03b4\u03ce.",
+   "ids": [
+    144674,
+    33486,
+    33486,
+    41424,
+    33269,
+    29762,
+    67337,
+    74134,
+    71638,
+    30143,
+    54141,
+    43123,
+    30143,
+    33269,
+    18945,
+    59147,
+    85386,
+    145240,
+    13
+   ],
+   "decoded": "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac \u03ba\u03b5\u03af\u03bc\u03b5\u03bd\u03b1 \u03b5\u03b4\u03ce."
+  },
+  {
+   "text": "caf\u00e9 na\u00efve r\u00e9sum\u00e9 \u2014 d\u00e9j\u00e0 vu, \u0153uvre",
+   "ids": [
+    924,
+    58858,
+    94880,
+    586,
+    9333,
+    1242,
+    963,
+    1959,
+    45839,
+    32514,
+    11,
+    98125,
+    60380
+   ],
+   "decoded": "caf\u00e9 na\u00efve r\u00e9sum\u00e9 \u2014 d\u00e9j\u00e0 vu, \u0153uvre"
+  },
+  {
+   "text": "Gr\u00f6\u00dfe, Stra\u00dfe, \u00fcberm\u00e4\u00dfig",
+   "ids": [
+    6464,
+    78940,
+    11,
+    26647,
+    23455,
+    11,
+    13785,
+    140448
+   ],
+   "decoded": "Gr\u00f6\u00dfe, Stra\u00dfe, \u00fcberm\u00e4\u00dfig"
+  },
+  {
+   "text": "\u0645\u0631\u062d\u0628\u0627 \u0628\u0627\u0644\u0639\u0627\u0644\u0645",
+   "ids": [
+    124122,
+    29825,
+    124671,
+    124476,
+    129634
+   ],
+   "decoded": "\u0645\u0631\u062d\u0628\u0627 \u0628\u0627\u0644\u0639\u0627\u0644\u0645"
+  },
+  {
+   "text": "\u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0941\u0928\u093f\u092f\u093e \u0967\u0968\u0969",
+   "ids": [
+    60096,
+    87244,
+    78368,
+    30484,
+    97,
+    34370,
+    14925,
+    99,
+    72653,
+    60096,
+    42311,
+    107,
+    23868,
+    220,
+    12619,
+    100,
+    12619,
+    101,
+    12619,
+    102
+   ],
+   "decoded": "\u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0941\u0928\u093f\u092f\u093e \u0967\u0968\u0969"
+  },
+  {
+   "text": "\ud83d\ude00\ud83d\ude03 \ud83e\udd16 family \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66 flag \ud83c\uddfa\ud83c\uddf8 tone \ud83d\udc4d\ud83c\udffd",
+   "ids": [
+    141334,
+    144858,
+    11162,
+    97,
+    244,
+    2997,
+    61804,
+    101,
+    378,
+    235,
+    145233,
+    378,
+    235,
+    145665,
+    378,
+    235,
+    145988,
+    5181,
+    11162,
+    229,
+    118,
+    145383,
+    16232,
+    61804,
+    235,
+    145375
+   ],
+   "decoded": "\ud83d\ude00\ud83d\ude03 \ud83e\udd16 family \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66 flag \ud83c\uddfa\ud83c\uddf8 tone \ud83d\udc4d\ud83c\udffd"
+  },
+  {
+   "text": "mixed English\u548c\u4e2d\u6587and\u65e5\u672c\u8a9e",
+   "ids": [
+    56685,
+    6364,
+    33108,
+    104811,
+    437,
+    101059,
+    102819
+   ],
+   "decoded": "mixed English\u548c\u4e2d\u6587and\u65e5\u672c\u8a9e"
+  },
+  {
+   "text": "\uff46\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48\uff11\uff12\uff13 \u534a\u89d2 vs \u5168\u89d2",
+   "ids": [
+    144862,
+    144552,
+    144433,
+    144433,
+    135116,
+    144155,
+    144514,
+    144297,
+    144455,
+    20109,
+    24918,
+    33517,
+    66521,
+    232,
+    63836,
+    6165,
+    34369,
+    101,
+    63836
+   ],
+   "decoded": "\uff46\uff55\uff4c\uff4c\uff57\uff49\uff44\uff54\uff48\uff11\uff12\uff13 \u534a\u89d2 vs \u5168\u89d2"
+  },
+  {
+   "text": "non-breaking\u00a0space and\u3000ideographic space",
+   "ids": [
+    6280,
+    54307,
+    4102,
+    8746,
+    323,
+    22441,
+    94007,
+    3550
+   ],
+   "decoded": "non-breaking\u00a0space and\u3000ideographic space"
+  },
+  {
+   "text": "combining: e\u0301 a\u0300 n\u0303 o\u0308",
+   "ids": [
+    21873,
+    5740,
+    25,
+    3958,
+    3784,
+    1683,
+    109,
+    16942
+   ],
+   "decoded": "combining: \u00e9 \u00e0 \u00f1 \u00f6"
+  },
+  {
+   "text": "ligatures \ufb01\ufb02 and \u0133 \ufb06",
+   "ids": [
+    7708,
+    2789,
+    32495,
+    70731,
+    144882,
+    323,
+    9843,
+    111,
+    32495,
+    105,
+    228
+   ],
+   "decoded": "ligatures \ufb01\ufb02 and \u0133 \ufb06"
+  },
+  {
+   "text": "\ud835\udd44\ud835\udd52\ud835\udd65\ud835\udd59 \ud835\udd38\ud835\udd43\u2119\u210d\ud835\udd38 \u2115\ud835\udd66\ud835\udd5e: \u00bd \u2153 \u2167 \u2460\u2461\u2462",
+   "ids": [
+    149882,
+    146898,
+    151333,
+    149885,
+    81250,
+    242,
+    116,
+    151329,
+    14936,
+    247,
+    149399,
+    151326,
+    57201,
+    149158,
+    148377,
+    25,
+    220,
+    26062,
+    220,
+    70467,
+    241,
+    220,
+    70467,
+    100,
+    220,
+    48312,
+    254,
+    48312,
+    94,
+    48312,
+    95
+   ],
+   "decoded": "\ud835\udd44\ud835\udd52\ud835\udd65\ud835\udd59 \ud835\udd38\ud835\udd43\u2119\u210d\ud835\udd38 \u2115\ud835\udd66\ud835\udd5e: \u00bd \u2153 \u2167 \u2460\u2461\u2462"
+  },
+  {
+   "text": "\ud83d\ude80 rocket v2.0 \u2014 \u3053\u3093\u306b\u3061\u306f world! \u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439 123",
+   "ids": [
+    145836,
+    24306,
+    348,
+    17,
+    13,
+    15,
+    1959,
+    220,
+    89015,
+    1879,
+    0,
+    52577,
+    6949,
+    26988,
+    20200,
+    82580,
+    220,
+    16,
+    17,
+    18
+   ],
+   "decoded": "\ud83d\ude80 rocket v2.0 \u2014 \u3053\u3093\u306b\u3061\u306f world! \u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439 123"
+  },
+  {
+   "text": "tab\t\u3068\t\u30bf\u30d6\u200bzero\u200bwidth",
+   "ids": [
+    6192,
+    197,
+    19182,
+    197,
+    46207,
+    51784,
+    15692,
+    14154,
+    15692,
+    3098
+   ],
+   "decoded": "tab\t\u3068\t\u30bf\u30d6\u200bzero\u200bwidth"
   }
  ],
  "specials": [
@@ -420,13 +796,15 @@
     9707,
     151645,
     198
-   ]
+   ],
+   "decoded": "<|im_start|>user\nHello<|im_end|>\n"
   },
   {
    "text": "<|endoftext|>",
    "ids": [
     151643
-   ]
+   ],
+   "decoded": "<|endoftext|>"
   },
   {
    "text": "before<|im_start|>after",
@@ -434,7 +812,8 @@
     14801,
     151644,
     10694
-   ]
+   ],
+   "decoded": "before<|im_start|>after"
   }
  ]
 }

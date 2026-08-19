@@ -18,6 +18,7 @@
 #include "model/config.hpp"
 #include "model/qwen2.hpp"
 #include "model/tokenizer.hpp"
+#include "model/unicode.hpp"
 
 namespace {
 
@@ -75,9 +76,13 @@ int cmd_tokenize(const std::string& model_dir, const std::string& text) {
     }
     std::printf("\n");
 
+    // Tokenization NFC-normalizes first (tokenizer.json declares it), so the
+    // roundtrip target is the NFC form — identical to the input except for
+    // decomposed accents and other non-NFC sequences.
     const std::string roundtrip = tok.decode(ids);
-    std::printf("roundtrip: %s\n", roundtrip == text ? "exact" : "MISMATCH");
-    return roundtrip == text ? 0 : 1;
+    const std::string normalized = nano::unicode::nfc(text);
+    std::printf("roundtrip: %s\n", roundtrip == normalized ? "exact" : "MISMATCH");
+    return roundtrip == normalized ? 0 : 1;
 }
 
 int cmd_generate(const std::vector<std::string>& args) {

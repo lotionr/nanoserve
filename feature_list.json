@@ -159,7 +159,7 @@
         "Run test_tokenizer via ctest",
         "Verify exact id match on every non-ASCII prompt"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F015",

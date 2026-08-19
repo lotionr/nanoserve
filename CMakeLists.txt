@@ -27,6 +27,7 @@ add_library(nanoserve_core STATIC
     src/model/config.cpp
     src/model/qwen2.cpp
     src/model/tokenizer.cpp
+    src/model/unicode.cpp
 )
 target_include_directories(nanoserve_core PUBLIC src)
 target_link_libraries(nanoserve_core PRIVATE nanoserve_warnings)

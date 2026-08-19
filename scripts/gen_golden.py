@@ -20,8 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = ROOT / "models" / "qwen2.5-0.5b-instruct"
 DATA_DIR = ROOT / "tests" / "data"
 
-# English/ASCII corpus for F011/F012. Non-ASCII parity is feature F014 and
-# gets its own corpus when the Unicode tables land.
+# English/ASCII corpus for F011/F012.
 TOKENIZER_CORPUS = [
     "Hello, world!",
     "hello world",
@@ -48,6 +47,30 @@ TOKENIZER_CORPUS = [
     "C++ isn't C, and C# isn't C++ either.",
     "wait... what?! (really?) [yes] {no} <maybe>",
     "The KV cache stores keys/values per layer: 24 layers x 2 heads x 64 dims.",
+]
+
+# Non-ASCII corpus for F014: exercises the generated \p{L}/\p{N} tables
+# (CJK, Cyrillic, Greek, Arabic, Devanagari, fullwidth), Unicode whitespace,
+# combining marks, and emoji (incl. ZWJ sequences, flags, skin tones).
+TOKENIZER_UNICODE_CORPUS = [
+    "中文分词测试。",
+    "日本語のテキスト、カタカナもある。",
+    "한국어 텍스트입니다.",
+    "Привет, мир! Русский текст.",
+    "Ελληνικά κείμενα εδώ.",
+    "café naïve résumé — déjà vu, œuvre",
+    "Größe, Straße, übermäßig",
+    "مرحبا بالعالم",
+    "नमस्ते दुनिया १२३",
+    "😀😃 🤖 family 👨‍👩‍👧‍👦 flag 🇺🇸 tone 👍🏽",
+    "mixed English和中文and日本語",
+    "ｆｕｌｌｗｉｄｔｈ１２３ 半角 vs 全角",
+    "non-breaking space and　ideographic space",
+    "combining: é à ñ ö",
+    "ligatures ﬁﬂ and ĳ ﬆ",
+    "𝕄𝕒𝕥𝕙 𝔸𝕃ℙℍ𝔸 ℕ𝕦𝕞: ½ ⅓ Ⅷ ①②③",
+    "🚀 rocket v2.0 — こんにちは world! Здравствуй 123",
+    "tab\tと\tタブ​zero​width",
 ]
 
 SPECIALS_CASES = [
@@ -99,22 +122,31 @@ CHAT_CASES = [
 
 def gen_tokenizer_golden() -> None:
     tok = Tokenizer.from_file(str(MODEL_DIR / "tokenizer.json"))
-    cases = []
-    for text in TOKENIZER_CORPUS:
-        ids = tok.encode(text, add_special_tokens=False).ids
-        cases.append({"text": text, "ids": ids})
-    specials = []
-    for text in SPECIALS_CASES:
-        ids = tok.encode(text, add_special_tokens=False).ids
-        specials.append({"text": text, "ids": ids})
+
+    def encode_all(corpus):
+        # "decoded" is HF's decode of the ids — the roundtrip target. It
+        # differs from "text" only when NFC changes the input (decomposed
+        # accents), since tokenization happens after normalization.
+        cases = []
+        for text in corpus:
+            ids = tok.encode(text, add_special_tokens=False).ids
+            cases.append({
+                "text": text,
+                "ids": ids,
+                "decoded": tok.decode(ids, skip_special_tokens=False),
+            })
+        return cases
+
     out = {
         "source": "Qwen/Qwen2.5-0.5B-Instruct tokenizer.json via HF tokenizers",
-        "cases": cases,
-        "specials": specials,
+        "cases": encode_all(TOKENIZER_CORPUS),
+        "unicode_cases": encode_all(TOKENIZER_UNICODE_CORPUS),
+        "specials": encode_all(SPECIALS_CASES),
     }
     path = DATA_DIR / "tokenizer_golden.json"
     path.write_text(json.dumps(out, indent=1))
-    print(f"wrote {path} ({len(cases)} cases, {len(specials)} specials)")
+    print(f"wrote {path} ({len(out['cases'])} cases, "
+          f"{len(out['unicode_cases'])} unicode, {len(out['specials'])} specials)")
 
 
 def gen_chat_golden() -> None:

@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <limits>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 
 #include "core/json.hpp"
+#include "model/unicode.hpp"
+#include "model/unicode_tables.hpp"
 
 namespace nano {
 
@@ -89,11 +92,18 @@ uint32_t next_codepoint(std::string_view s, size_t& i) {
 // ---------------------------------------------------------------------------
 // Character classes for the pretokenizer.
 //
-// ASCII is exact. Non-ASCII uses coarse block ranges covering the common
-// scripts; this is enough for exact HF parity on the English golden corpus.
-// Full Unicode category tables (exact \p{L}/\p{N} parity on CJK/emoji/mixed
-// text) are tracked as feature F014.
+// \p{L} and \p{N} come from generated Unicode general-category tables
+// (unicode_tables.hpp, F014) — binary search over sorted ranges. \s is the
+// regex engine's Unicode whitespace set, small enough to list inline.
 // ---------------------------------------------------------------------------
+
+bool in_ranges(std::span<const unicode::CodepointRange> ranges, uint32_t c) {
+    // Find the first range whose hi >= c, then check it contains c.
+    auto it = std::lower_bound(
+        ranges.begin(), ranges.end(), c,
+        [](const unicode::CodepointRange& r, uint32_t cp) { return r.hi < cp; });
+    return it != ranges.end() && it->lo <= c;
+}
 
 bool is_whitespace(uint32_t c) {
     switch (c) {
@@ -118,41 +128,17 @@ bool is_whitespace(uint32_t c) {
 }
 
 bool is_letter(uint32_t c) {
-    if (c < 0x80) {
+    if (c < 0x80) {  // fast path: ASCII decides most calls
         return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
     }
-    static constexpr std::pair<uint32_t, uint32_t> kRanges[] = {
-        {0xAA, 0xAA},      {0xB5, 0xB5},      {0xBA, 0xBA},      {0xC0, 0xD6},
-        {0xD8, 0xF6},      {0xF8, 0x2C1},     {0x370, 0x3FF},    {0x400, 0x52F},
-        {0x531, 0x58F},    {0x5D0, 0x5EA},    {0x620, 0x64A},    {0x900, 0x97F},
-        {0xE01, 0xE5B},    {0x1E00, 0x1FFF},  {0x3041, 0x30FF},  {0x3400, 0x4DBF},
-        {0x4E00, 0x9FFF},  {0xA000, 0xA48F},  {0xAC00, 0xD7A3},  {0xF900, 0xFAFF},
-        {0x1F00, 0x1FFF},
-    };
-    for (const auto& [lo, hi] : kRanges) {
-        if (c >= lo && c <= hi) {
-            return true;
-        }
-    }
-    return false;
+    return in_ranges(unicode::kLetterRanges, c);
 }
 
 bool is_number(uint32_t c) {
     if (c < 0x80) {
         return c >= '0' && c <= '9';
     }
-    static constexpr std::pair<uint32_t, uint32_t> kRanges[] = {
-        {0x660, 0x669},    // Arabic-Indic
-        {0x6F0, 0x6F9},    // Extended Arabic-Indic
-        {0x966, 0x96F},    // Devanagari
-        {0xFF10, 0xFF19},  // Fullwidth
-    };
-    for (const auto& [lo, hi] : kRanges) {
-        if (c >= lo && c <= hi) {
-            return true;
-        }
-    }
-    return false;
+    return in_ranges(unicode::kNumberRanges, c);
 }
 
 uint32_t ascii_lower(uint32_t c) {
@@ -358,8 +344,9 @@ std::vector<std::pair<size_t, size_t>> Tokenizer::pretokenize(std::string_view t
             ++j;
         }
         if (j == i) {
-            // Not whitespace and nothing above matched: lone unclassified
-            // code point (rare; approximate Unicode tables). Emit it alone.
+            // Unreachable with exact tables (any non-whitespace code point
+            // matches alternative 2, 3, or 4), but kept as a safe fallback:
+            // emit the code point alone rather than loop forever.
             emit(i, i + 1);
             ++i;
             continue;
@@ -460,9 +447,14 @@ void Tokenizer::bpe(std::string_view chunk, std::vector<int32_t>& out) const {
 // ---------------------------------------------------------------------------
 
 std::vector<int32_t> Tokenizer::encode(std::string_view text) const {
+    // NFC first: tokenizer.json declares an NFC normalizer, so HF composes
+    // "e" + COMBINING ACUTE into "é" before pretokenization. Matching ids
+    // means matching that step. (Consequence: decode(encode(s)) == nfc(s),
+    // which is s itself for already-composed text.)
+    const std::string normalized = unicode::nfc(text);
     std::vector<int32_t> ids;
-    for (const auto& [begin, end] : pretokenize(text)) {
-        bpe(text.substr(begin, end - begin), ids);
+    for (const auto& [begin, end] : pretokenize(normalized)) {
+        bpe(std::string_view(normalized).substr(begin, end - begin), ids);
     }
     return ids;
 }
@@ -488,17 +480,18 @@ std::vector<int32_t> Tokenizer::encode_with_specials(std::string_view text) cons
             break;
         }
         if (match_pos > pos) {
-            for (const auto& [begin, end] : pretokenize(text.substr(pos, match_pos - pos))) {
-                bpe(text.substr(pos + begin, end - begin), ids);
-            }
+            // Segments between specials go through encode() so they get the
+            // same NFC normalization HF applies (specials themselves are
+            // matched on the raw text, before normalization).
+            const std::vector<int32_t> seg = encode(text.substr(pos, match_pos - pos));
+            ids.insert(ids.end(), seg.begin(), seg.end());
         }
         ids.push_back(match_id);
         pos = match_pos + match_len;
     }
     if (pos < text.size()) {
-        for (const auto& [begin, end] : pretokenize(text.substr(pos))) {
-            bpe(text.substr(pos + begin, end - begin), ids);
-        }
+        const std::vector<int32_t> seg = encode(text.substr(pos));
+        ids.insert(ids.end(), seg.begin(), seg.end());
     }
     return ids;
 }

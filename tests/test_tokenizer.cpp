@@ -20,30 +20,38 @@ int main() {
 
     // F011: encode() matches HF `tokenizers` exactly on the golden corpus.
     // F012: decode() roundtrips byte-identically.
-    for (const auto& c : golden.at("cases").items()) {
-        const std::string& text = c.at("text").as_string();
-        const auto& want = c.at("ids").items();
+    // F014: same checks over the non-ASCII corpus (CJK, Cyrillic, emoji, ...)
+    //       — exercises the generated \p{L}/\p{N} tables.
+    for (const char* section : {"cases", "unicode_cases"}) {
+        for (const auto& c : golden.at(section).items()) {
+            const std::string& text = c.at("text").as_string();
+            const auto& want = c.at("ids").items();
 
-        const std::vector<int32_t> got = tok.encode(text);
-        bool match = got.size() == want.size();
-        if (match) {
-            for (size_t i = 0; i < got.size(); ++i) {
-                match = match && got[i] == static_cast<int32_t>(want[i].as_int());
+            const std::vector<int32_t> got = tok.encode(text);
+            bool match = got.size() == want.size();
+            if (match) {
+                for (size_t i = 0; i < got.size(); ++i) {
+                    match = match && got[i] == static_cast<int32_t>(want[i].as_int());
+                }
             }
+            if (!match) {
+                std::fprintf(stderr, "  text: %s\n  got :", text.c_str());
+                for (int32_t id : got) {
+                    std::fprintf(stderr, " %d", id);
+                }
+                std::fprintf(stderr, "\n  want:");
+                for (const auto& id : want) {
+                    std::fprintf(stderr, " %lld", static_cast<long long>(id.as_int()));
+                }
+                std::fprintf(stderr, "\n");
+            }
+            NANO_CHECK_MSG(match, "encode mismatch on: %s", text.c_str());
+            // Roundtrip target is HF's own decode: identical to `text` except
+            // when NFC normalization changed the input before tokenization.
+            const std::string& want_decoded = c.at("decoded").as_string();
+            NANO_CHECK_MSG(tok.decode(got) == want_decoded, "roundtrip mismatch on: %s",
+                           text.c_str());
         }
-        if (!match) {
-            std::fprintf(stderr, "  text: %s\n  got :", text.c_str());
-            for (int32_t id : got) {
-                std::fprintf(stderr, " %d", id);
-            }
-            std::fprintf(stderr, "\n  want:");
-            for (const auto& id : want) {
-                std::fprintf(stderr, " %lld", static_cast<long long>(id.as_int()));
-            }
-            std::fprintf(stderr, "\n");
-        }
-        NANO_CHECK_MSG(match, "encode mismatch on: %s", text.c_str());
-        NANO_CHECK_MSG(tok.decode(got) == text, "roundtrip mismatch on: %s", text.c_str());
     }
 
     // Special tokens are known and atomic (never split into bytes).
