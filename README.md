@@ -70,7 +70,16 @@ Current state (kept honest; see `feature_list.json` for the full sequenced list)
       CPU sdot path). The honest headline: at 0.5B, GPU decode is SLOWER than the
       CPU (each projection pays a synchronous dispatch round-trip, ~121 per
       token), so the CPU stays the default — see the benchmark table
-- [ ] Stretch: paged KV cache, HTTP serving endpoint
+- [x] Paged KV cache: 16-token pages, per-sequence block tables, and a shared
+      free-list page pool — the vLLM PagedAttention memory model, minus prefix
+      sharing (the design note in `src/model/paged_kv.hpp` maps the two
+      name-for-name and lists what was deliberately left out). Paged logits are
+      bit-identical to the contiguous cache across page boundaries; a short
+      generation's KV memory high-water is ~20x below the max-context
+      preallocation (test prints both); allocator invariants (no unbacked or
+      double-allocated page, exact reuse after free) survive a model-free
+      alloc/free churn test across interleaved sequences (`test_paged_alloc`)
+- [ ] Stretch: HTTP serving endpoint
 
 ## Benchmarks
 

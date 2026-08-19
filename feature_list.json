@@ -387,7 +387,7 @@
         "Verify memory high-water mark for a short generation is much lower than the full-context preallocation (print both)",
         "Verify a generation that exceeds one block boundary is still exact"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F035",
