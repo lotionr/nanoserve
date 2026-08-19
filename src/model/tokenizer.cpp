@@ -521,4 +521,42 @@ std::string Tokenizer::decode(std::span<const int32_t> ids) const {
     return out;
 }
 
+std::string StreamDecoder::push(int32_t id) {
+    const int32_t ids[] = {id};
+    pending_ += tokenizer_.decode(ids);
+
+    // Emit everything except a trailing *incomplete* UTF-8 sequence. A UTF-8
+    // character is at most 4 bytes, so only the last 3 bytes can hide an
+    // unfinished lead: scan back over continuation bytes (10xxxxxx) to the
+    // nearest lead byte and check whether its sequence is still short.
+    size_t cut = pending_.size();
+    for (size_t back = 1; back <= 3 && back <= pending_.size(); ++back) {
+        const auto b = static_cast<unsigned char>(pending_[pending_.size() - back]);
+        if ((b & 0xC0) == 0x80) {
+            continue;  // continuation byte — keep scanning for its lead
+        }
+        size_t seq_len = 1;  // ASCII or invalid lead: complete as-is
+        if ((b & 0xE0) == 0xC0) {
+            seq_len = 2;
+        } else if ((b & 0xF0) == 0xE0) {
+            seq_len = 3;
+        } else if ((b & 0xF8) == 0xF0) {
+            seq_len = 4;
+        }
+        if (seq_len > back) {
+            cut = pending_.size() - back;  // unfinished: hold these bytes
+        }
+        break;
+    }
+    std::string out = pending_.substr(0, cut);
+    pending_.erase(0, cut);
+    return out;
+}
+
+std::string StreamDecoder::flush() {
+    std::string out;
+    out.swap(pending_);
+    return out;
+}
+
 }  // namespace nano

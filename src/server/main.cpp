@@ -18,6 +18,7 @@
 #include "model/chat_template.hpp"
 #include "model/config.hpp"
 #include "model/qwen2.hpp"
+#include "model/sampler.hpp"
 #include "model/tokenizer.hpp"
 #include "model/unicode.hpp"
 
@@ -32,7 +33,8 @@ int usage() {
                  "usage:\n"
                  "  nanoserve inspect  <file.safetensors>\n"
                  "  nanoserve tokenize <model_dir> <text>\n"
-                 "  nanoserve generate <model_dir> -p <prompt> [-n max_tokens] [--greedy] [--stats]\n"
+                 "  nanoserve generate <model_dir> -p <prompt> [-n max_tokens] [--greedy]\n"
+                 "                     [--temp T] [--top-k K] [--top-p P] [--seed S] [--stats]\n"
                  "  nanoserve version\n",
                  static_cast<int>(kVersion.size()), kVersion.data());
     return 2;
@@ -87,19 +89,29 @@ int cmd_tokenize(const std::string& model_dir, const std::string& text) {
 }
 
 int cmd_generate(const std::vector<std::string>& args) {
-    // args: <model_dir> then flags. Greedy is the only decoding mode so far
-    // (--greedy is accepted for forward compatibility; sampling is F022).
+    // args: <model_dir> then flags. Greedy (temperature 0) is the default;
+    // --temp enables sampling, shaped by --top-k/--top-p, seeded by --seed.
     std::string model_dir;
     std::string prompt;
     int64_t max_tokens = 32;
     bool stats = false;
+    nano::SamplerOptions sampling = {
+        .temperature = 0.0f, .top_k = 0, .top_p = 1.0f, .seed = 0};
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "-p" && i + 1 < args.size()) {
             prompt = args[++i];
         } else if (args[i] == "-n" && i + 1 < args.size()) {
             max_tokens = std::atoll(args[++i].c_str());
         } else if (args[i] == "--greedy") {
-            // default; nothing to do
+            sampling.temperature = 0.0f;
+        } else if (args[i] == "--temp" && i + 1 < args.size()) {
+            sampling.temperature = std::strtof(args[++i].c_str(), nullptr);
+        } else if (args[i] == "--top-k" && i + 1 < args.size()) {
+            sampling.top_k = std::atoll(args[++i].c_str());
+        } else if (args[i] == "--top-p" && i + 1 < args.size()) {
+            sampling.top_p = std::strtof(args[++i].c_str(), nullptr);
+        } else if (args[i] == "--seed" && i + 1 < args.size()) {
+            sampling.seed = std::strtoull(args[++i].c_str(), nullptr, 10);
         } else if (args[i] == "--stats") {
             stats = true;
         } else if (model_dir.empty() && args[i][0] != '-') {
@@ -122,9 +134,30 @@ int cmd_generate(const std::vector<std::string>& args) {
     nano::Engine engine(model_dir);
     const std::vector<int32_t> stop_ids = {tok.special_id("<|im_end|>"),
                                            tok.special_id("<|endoftext|>")};
+    nano::Sampler sampler(sampling, engine.model().config.vocab_size);
     nano::GenerateStats gen_stats;
-    const std::vector<int32_t> generated = nano::greedy_generate(
-        engine, prompt_ids, max_tokens, stop_ids, stats ? &gen_stats : nullptr);
+
+    // Tokens stream to stdout as they are generated (flushed per token so
+    // pipes see them live). Stop tokens like <|im_end|> are not printed.
+    nano::StreamDecoder stream(tok);
+    const auto print_token = [&](int32_t id) {
+        for (int32_t s : stop_ids) {
+            if (id == s) {
+                return;
+            }
+        }
+        const std::string chunk = stream.push(id);
+        std::fwrite(chunk.data(), 1, chunk.size(), stdout);
+        std::fflush(stdout);
+    };
+
+    std::printf("---\n");
+    const std::vector<int32_t> generated =
+        nano::generate(engine, prompt_ids, max_tokens, stop_ids, sampler,
+                       stats ? &gen_stats : nullptr, print_token);
+    const std::string tail = stream.flush();
+    std::fwrite(tail.data(), 1, tail.size(), stdout);
+    std::printf("\n---\n");
 
     std::printf("prompt tokens: %zu, generated tokens: %zu\n", prompt_ids.size(),
                 generated.size());
@@ -132,7 +165,7 @@ int cmd_generate(const std::vector<std::string>& args) {
     for (int32_t id : generated) {
         std::printf(" %d", id);
     }
-    std::printf("\n---\n%s\n", tok.decode(generated).c_str());
+    std::printf("\n");
 
     if (stats && !generated.empty()) {
         std::vector<double> steps = gen_stats.step_ms;

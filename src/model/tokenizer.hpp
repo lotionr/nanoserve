@@ -75,4 +75,31 @@ private:
     std::unordered_map<int32_t, std::string> special_by_id_;
 };
 
+/// Incremental detokenizer for streaming output.
+///
+/// decode() is a pure per-token byte concatenation, so decoding token by
+/// token yields exactly the batch result — except that byte-level BPE can
+/// split one multi-byte UTF-8 character across two tokens (e.g. a 3-byte CJK
+/// character whose first byte ends one token). push() holds such an
+/// incomplete trailing sequence back until its continuation bytes arrive, so
+/// every returned chunk is printable valid UTF-8 and the concatenation of
+/// all chunks (plus flush()) is byte-identical to decode(all ids).
+class StreamDecoder {
+public:
+    /// The tokenizer must outlive the decoder.
+    explicit StreamDecoder(const Tokenizer& tokenizer) : tokenizer_(tokenizer) {}
+
+    /// Feeds one generated token; returns the bytes now safe to print
+    /// (possibly empty while a character is still incomplete).
+    std::string push(int32_t id);
+
+    /// Returns any still-held bytes. Only non-empty if the stream ended in
+    /// the middle of a character (e.g. generation cut off by max_tokens).
+    std::string flush();
+
+private:
+    const Tokenizer& tokenizer_;
+    std::string pending_;  // bytes withheld because they end mid-character
+};
+
 }  // namespace nano
