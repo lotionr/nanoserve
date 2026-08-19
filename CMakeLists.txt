@@ -28,6 +28,7 @@ set(NANOSERVE_CORE_SOURCES
     src/core/threadpool.cpp
     src/model/chat_template.cpp
     src/model/config.cpp
+    src/model/paged_kv.cpp
     src/model/qwen2.cpp
     src/model/sampler.cpp
     src/model/tokenizer.cpp
@@ -118,6 +119,7 @@ if(NANOSERVE_BUILD_TESTS)
     nanoserve_test(test_forward)
     nanoserve_test(test_generate)
     nanoserve_test(test_kvcache)
+    nanoserve_test(test_paged_alloc)  # model-free: runs everywhere, incl. CI
     nanoserve_test(test_sampling)
     nanoserve_test(test_streaming)
     nanoserve_test(test_alloc)

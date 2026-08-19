@@ -2,7 +2,8 @@
 //
 // The design is deliberately plain (llama2.c lineage):
 //   - Qwen2Model  = every weight widened to fp32 up front (~2 GB for 0.5B).
-//   - KvCache     = per-layer K/V rows, contiguous [max_seq, kv_dim].
+//   - KvCache     = per-layer K/V rows, contiguous [max_seq, kv_dim]
+//                   (or PagedKvCache, paged_kv.hpp — grown page by page).
 //   - layer_forward() = one transformer block over a span of new tokens.
 //   - Engine      = embed -> 24 x layer_forward -> final norm -> lm_head.
 //
@@ -14,11 +15,13 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "model/config.hpp"
+#include "model/paged_kv.hpp"
 
 namespace nano {
 
@@ -81,12 +84,18 @@ int quantize_model_file(const std::string& model_dir, const std::string& out_pat
 
 /// K/V storage: for each layer, `max_seq` rows of `n_kv_heads * head_dim`
 /// floats. Rows are written once per position and never move (contiguous
-/// preallocation; the paged version is F034).
+/// preallocation; the paged alternative is PagedKvCache, F034).
 class KvCache {
 public:
     KvCache(const ModelConfig& config, int64_t max_seq);
 
+    /// No-op: every row exists from construction. Present so KvCache and
+    /// PagedKvCache satisfy the same interface for the templated forward.
+    void prepare(int64_t /*pos0*/, int64_t /*tokens*/) {}
+
     int64_t max_seq() const { return max_seq_; }
+    /// The preallocation cost, for comparison against PagePool::bytes_backed.
+    int64_t bytes_allocated() const;
     float* k_row(int64_t layer, int64_t pos) {
         return k_[static_cast<size_t>(layer)].data() + pos * kv_dim_;
     }
@@ -126,8 +135,22 @@ struct Scratch {
 /// [0, pos0+t] for each row t — the causal mask, expressed as a loop bound.
 /// Free function (not an Engine private) so the layer golden test can drive
 /// a single layer in isolation.
+///
+/// Templated over the cache (KvCache or PagedKvCache — defined for exactly
+/// those two in qwen2.cpp) instead of virtual: k_row/v_row sit in the
+/// attention inner loop, and the two storage layouts share every line of
+/// math. The caller must have prepare()d the cache for [pos0, pos0+tokens).
+template <class Cache>
 void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
-                   int64_t tokens, int64_t pos0, KvCache& cache, Scratch& scratch);
+                   int64_t tokens, int64_t pos0, Cache& cache, Scratch& scratch);
+
+/// Which KV cache layout an Engine runs on (F034). Contiguous preallocates
+/// max_seq rows up front; paged allocates 16-token pages as the sequence
+/// grows (see paged_kv.hpp for the design note). Outputs are bit-identical.
+enum class KvLayout {
+    contiguous,
+    paged,
+};
 
 /// Owns the model, the cache, and the scratch buffers.
 class Engine {
@@ -139,7 +162,8 @@ public:
     /// unified memory that is a zero-copy page wrap for the big matrices,
     /// so "upload" costs nothing and happens once, at load time.
     explicit Engine(const std::string& model_dir, int64_t max_seq = 2048,
-                    const std::string& weights_file = "");
+                    const std::string& weights_file = "",
+                    KvLayout kv_layout = KvLayout::contiguous);
 
     /// Unregisters the GPU-resident weights (registered iff the metal
     /// backend was selected at construction) BEFORE the vectors that back
@@ -152,18 +176,34 @@ public:
     /// returns the logits ([vocab_size]) for the last token fed.
     std::span<const float> forward(std::span<const int32_t> ids);
 
-    /// Forgets the sequence (cache rows are simply overwritten).
-    void reset() { seq_len_ = 0; }
+    /// Forgets the sequence. Contiguous: rows are simply overwritten.
+    /// Paged: the sequence's pages go back to the pool as well.
+    void reset();
 
     int64_t seq_len() const { return seq_len_; }
+    int64_t max_seq() const { return max_seq_; }
     const Qwen2Model& model() const { return model_; }
+
+    /// KV memory actually allocated so far: the full preallocation for the
+    /// contiguous layout, the backed-pages high-water mark for the paged one
+    /// (pages keep their memory across reset(); see PagePool).
+    int64_t kv_bytes_allocated() const;
 
     /// Embedding lookup only (exposed for the golden test).
     void embed(std::span<const int32_t> ids, float* out) const;
 
 private:
+    /// forward() after the layout dispatch; Cache is KvCache or PagedKvCache.
+    template <class Cache>
+    std::span<const float> forward_with(Cache& cache, std::span<const int32_t> ids);
+
     Qwen2Model model_;
-    KvCache cache_;
+    int64_t max_seq_ = 0;
+    // Exactly one layout is live: contig_cache_, or pool_ + paged_cache_
+    // (constructed in that order — the cache borrows the pool).
+    std::unique_ptr<KvCache> contig_cache_;
+    std::unique_ptr<PagePool> pool_;
+    std::unique_ptr<PagedKvCache> paged_cache_;
     bool gpu_registered_ = false;  // weights registered with the metal backend
     int64_t seq_len_ = 0;         // tokens already in the cache
     Scratch scratch_;             // per-layer work buffers, reused every call

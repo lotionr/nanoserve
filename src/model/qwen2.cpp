@@ -189,6 +189,11 @@ KvCache::KvCache(const ModelConfig& config, int64_t max_seq)
     v_.assign(static_cast<size_t>(config.num_layers), std::vector<float>(bytes_per_layer));
 }
 
+int64_t KvCache::bytes_allocated() const {
+    return static_cast<int64_t>(k_.size()) * 2 * max_seq_ * kv_dim_ *
+           static_cast<int64_t>(sizeof(float));
+}
+
 void Scratch::ensure(const ModelConfig& config, int64_t tokens, int64_t max_seq) {
     const auto grow = [](std::vector<float>& v, int64_t needed) {
         if (v.size() < static_cast<size_t>(needed)) {
@@ -205,8 +210,9 @@ void Scratch::ensure(const ModelConfig& config, int64_t tokens, int64_t max_seq)
     grow(final_normed, config.hidden_size);
 }
 
+template <class Cache>
 void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
-                   int64_t tokens, int64_t pos0, KvCache& cache, Scratch& scratch) {
+                   int64_t tokens, int64_t pos0, Cache& cache, Scratch& scratch) {
     const ModelConfig& c = model.config;
     const LayerWeights& w = model.layers[static_cast<size_t>(layer_idx)];
     const int64_t H = c.hidden_size;
@@ -278,9 +284,26 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
     ops::add(hidden, proj.data(), hidden, tokens * H);
 }
 
+// The only two cache layouts (qwen2.hpp's KvLayout). Instantiated here so
+// the template definition can live in this .cpp next to the math it runs.
+template void layer_forward<KvCache>(const Qwen2Model&, int64_t, float*, int64_t,
+                                     int64_t, KvCache&, Scratch&);
+template void layer_forward<PagedKvCache>(const Qwen2Model&, int64_t, float*,
+                                          int64_t, int64_t, PagedKvCache&, Scratch&);
+
 Engine::Engine(const std::string& model_dir, int64_t max_seq,
-               const std::string& weights_file)
-    : model_(Qwen2Model::load(model_dir, weights_file)), cache_(model_.config, max_seq) {
+               const std::string& weights_file, KvLayout kv_layout)
+    : model_(Qwen2Model::load(model_dir, weights_file)), max_seq_(max_seq) {
+    if (kv_layout == KvLayout::paged) {
+        // Pool capacity = exactly the pages a max_seq sequence could need, so
+        // the "sequence exceeds capacity" error fires before pool exhaustion.
+        const int64_t max_pages =
+            (max_seq + kPageSizeDefault - 1) / kPageSizeDefault;
+        pool_ = std::make_unique<PagePool>(model_.config, kPageSizeDefault, max_pages);
+        paged_cache_ = std::make_unique<PagedKvCache>(*pool_, max_seq);
+    } else {
+        contig_cache_ = std::make_unique<KvCache>(model_.config, max_seq);
+    }
     logits_.resize(static_cast<size_t>(model_.config.vocab_size));
     if (ops::backend() == ops::Backend::metal) {
         register_model_weights(model_, /*reg=*/true);
@@ -316,16 +339,38 @@ void Engine::embed(std::span<const int32_t> ids, float* out) const {
     }
 }
 
+void Engine::reset() {
+    seq_len_ = 0;
+    if (paged_cache_) {
+        paged_cache_->release();  // pages back to the pool
+    }
+}
+
+int64_t Engine::kv_bytes_allocated() const {
+    return pool_ ? pool_->bytes_backed() : contig_cache_->bytes_allocated();
+}
+
 std::span<const float> Engine::forward(std::span<const int32_t> ids) {
+    // One dispatch per forward() call; every loop below it is fully typed.
+    if (paged_cache_) {
+        return forward_with(*paged_cache_, ids);
+    }
+    return forward_with(*contig_cache_, ids);
+}
+
+template <class Cache>
+std::span<const float> Engine::forward_with(Cache& cache, std::span<const int32_t> ids) {
     const ModelConfig& c = model_.config;
     const int64_t tokens = static_cast<int64_t>(ids.size());
     if (tokens == 0) {
         throw std::runtime_error("forward() needs at least one token");
     }
-    if (seq_len_ + tokens > cache_.max_seq()) {
+    if (seq_len_ + tokens > cache.max_seq()) {
         throw std::runtime_error("sequence exceeds KV cache capacity (" +
-                                 std::to_string(cache_.max_seq()) + " tokens)");
+                                 std::to_string(cache.max_seq()) + " tokens)");
     }
+    // Contiguous: no-op. Paged: allocate pages covering the new positions.
+    cache.prepare(seq_len_, tokens);
     const int64_t H = c.hidden_size;
 
     // resize() only allocates when it grows past capacity — a 1-token decode
@@ -333,7 +378,7 @@ std::span<const float> Engine::forward(std::span<const int32_t> ids) {
     hidden_.resize(static_cast<size_t>(tokens * H));
     embed(ids, hidden_.data());
     for (int64_t layer = 0; layer < c.num_layers; ++layer) {
-        layer_forward(model_, layer, hidden_.data(), tokens, seq_len_, cache_, scratch_);
+        layer_forward(model_, layer, hidden_.data(), tokens, seq_len_, cache, scratch_);
     }
     seq_len_ += tokens;
 
