@@ -71,6 +71,25 @@ private:
     std::vector<std::vector<float>> v_;
 };
 
+/// Scratch buffers for the forward pass, owned by the caller (the Engine)
+/// and reused across calls so the decode hot loop allocates nothing (F024).
+/// ensure() only ever grows a buffer — after the first, largest call (the
+/// prefill), every 1-token decode step finds the buffers already big enough.
+struct Scratch {
+    std::vector<float> normed;        // [tokens, hidden]
+    std::vector<float> q;             // [tokens, n_heads * head_dim]
+    std::vector<float> attn;          // [tokens, n_heads * head_dim]
+    std::vector<float> proj;          // [tokens, hidden]
+    std::vector<float> gate;          // [tokens, intermediate]
+    std::vector<float> up;            // [tokens, intermediate]
+    std::vector<float> scores;        // [max_seq]: one attention row, sized
+                                      //   for the full context up front so it
+                                      //   never regrows as the sequence does
+    std::vector<float> final_normed;  // [hidden]: lm_head input
+
+    void ensure(const ModelConfig& config, int64_t tokens, int64_t max_seq);
+};
+
 /// Runs transformer layer `layer_idx` in place over `tokens` rows of `hidden`
 /// ([tokens, hidden_size]) whose sequence positions are pos0, pos0+1, ....
 /// Writes this range's K/V into the cache and attends over positions
@@ -78,7 +97,7 @@ private:
 /// Free function (not an Engine private) so the layer golden test can drive
 /// a single layer in isolation.
 void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
-                   int64_t tokens, int64_t pos0, KvCache& cache);
+                   int64_t tokens, int64_t pos0, KvCache& cache, Scratch& scratch);
 
 /// Owns the model, the cache, and the scratch buffers.
 class Engine {
@@ -102,6 +121,7 @@ private:
     Qwen2Model model_;
     KvCache cache_;
     int64_t seq_len_ = 0;         // tokens already in the cache
+    Scratch scratch_;             // per-layer work buffers, reused every call
     std::vector<float> hidden_;   // [tokens, hidden] for the current call
     std::vector<float> logits_;   // [vocab]
 };

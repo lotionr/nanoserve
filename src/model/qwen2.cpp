@@ -81,8 +81,24 @@ KvCache::KvCache(const ModelConfig& config, int64_t max_seq)
     v_.assign(static_cast<size_t>(config.num_layers), std::vector<float>(bytes_per_layer));
 }
 
+void Scratch::ensure(const ModelConfig& config, int64_t tokens, int64_t max_seq) {
+    const auto grow = [](std::vector<float>& v, int64_t needed) {
+        if (v.size() < static_cast<size_t>(needed)) {
+            v.resize(static_cast<size_t>(needed));
+        }
+    };
+    grow(normed, tokens * config.hidden_size);
+    grow(q, tokens * config.num_heads * config.head_dim);
+    grow(attn, tokens * config.num_heads * config.head_dim);
+    grow(proj, tokens * config.hidden_size);
+    grow(gate, tokens * config.intermediate_size);
+    grow(up, tokens * config.intermediate_size);
+    grow(scores, max_seq);
+    grow(final_normed, config.hidden_size);
+}
+
 void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
-                   int64_t tokens, int64_t pos0, KvCache& cache) {
+                   int64_t tokens, int64_t pos0, KvCache& cache, Scratch& scratch) {
     const ModelConfig& c = model.config;
     const LayerWeights& w = model.layers[static_cast<size_t>(layer_idx)];
     const int64_t H = c.hidden_size;
@@ -95,12 +111,13 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
     const float scale = 1.0f / std::sqrt(static_cast<float>(D));
     const float theta = static_cast<float>(c.rope_theta);
 
-    // Scratch (allocation-free decode is F024; clarity first).
-    std::vector<float> normed(static_cast<size_t>(tokens * H));
-    std::vector<float> q(static_cast<size_t>(tokens * q_dim));
-    std::vector<float> attn(static_cast<size_t>(tokens * q_dim));
-    std::vector<float> proj(static_cast<size_t>(tokens * H));
-    std::vector<float> scores(static_cast<size_t>(pos0 + tokens));
+    // No-op after the first (largest) call — decode steps allocate nothing.
+    scratch.ensure(c, tokens, cache.max_seq());
+    std::vector<float>& normed = scratch.normed;
+    std::vector<float>& q = scratch.q;
+    std::vector<float>& attn = scratch.attn;
+    std::vector<float>& proj = scratch.proj;
+    std::vector<float>& scores = scratch.scores;
 
     // --- attention block: hidden += o_proj(attend(rope(qkv(norm(hidden))))) ---
     ops::rmsnorm(hidden, w.input_norm.data(), normed.data(), tokens, H, eps);
@@ -145,8 +162,8 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
 
     // --- MLP block: hidden += down(silu(gate(norm(hidden))) * up(norm(hidden))) ---
     const int64_t I = c.intermediate_size;
-    std::vector<float> gate(static_cast<size_t>(tokens * I));
-    std::vector<float> up(static_cast<size_t>(tokens * I));
+    std::vector<float>& gate = scratch.gate;
+    std::vector<float>& up = scratch.up;
     ops::rmsnorm(hidden, w.post_norm.data(), normed.data(), tokens, H, eps);
     ops::linear(normed.data(), w.gate_w.data(), nullptr, gate.data(), tokens, H, I);
     ops::linear(normed.data(), w.up_w.data(), nullptr, up.data(), tokens, H, I);
@@ -182,19 +199,21 @@ std::span<const float> Engine::forward(std::span<const int32_t> ids) {
     }
     const int64_t H = c.hidden_size;
 
+    // resize() only allocates when it grows past capacity — a 1-token decode
+    // step after a longer prefill reuses the prefill's storage.
     hidden_.resize(static_cast<size_t>(tokens * H));
     embed(ids, hidden_.data());
     for (int64_t layer = 0; layer < c.num_layers; ++layer) {
-        layer_forward(model_, layer, hidden_.data(), tokens, seq_len_, cache_);
+        layer_forward(model_, layer, hidden_.data(), tokens, seq_len_, cache_, scratch_);
     }
     seq_len_ += tokens;
 
     // Only the last token's hidden state becomes logits (that's the one whose
     // next token we're predicting). lm_head is the embedding matrix (tied).
-    std::vector<float> normed(static_cast<size_t>(H));
+    float* normed = scratch_.final_normed.data();
     ops::rmsnorm(hidden_.data() + (tokens - 1) * H, model_.final_norm.data(),
-                 normed.data(), 1, H, static_cast<float>(c.rms_norm_eps));
-    ops::linear(normed.data(), model_.embed_tokens.data(), nullptr, logits_.data(), 1, H,
+                 normed, 1, H, static_cast<float>(c.rms_norm_eps));
+    ops::linear(normed, model_.embed_tokens.data(), nullptr, logits_.data(), 1, H,
                 c.vocab_size);
     return logits_;
 }
@@ -218,7 +237,12 @@ std::vector<int32_t> generate(Engine& engine, std::span<const int32_t> prompt_id
         return std::chrono::duration<double, std::milli>(d).count();
     };
 
+    // Reserve up front so the loop's push_backs never reallocate (F024).
     std::vector<int32_t> out;
+    out.reserve(static_cast<size_t>(max_new_tokens));
+    if (stats) {
+        stats->step_ms.reserve(static_cast<size_t>(max_new_tokens));
+    }
     auto t0 = now();
     std::span<const float> logits = engine.forward(prompt_ids);
     for (int64_t i = 0; i < max_new_tokens; ++i) {

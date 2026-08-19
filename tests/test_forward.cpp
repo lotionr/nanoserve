@@ -92,7 +92,8 @@ int main() {
         // (accumulation order), and our fp32 result lands within 4.5e-5 of
         // the golden, i.e. at the same fp32 noise floor.
         nano::KvCache cache(cfg, tokens);
-        nano::layer_forward(engine.model(), 0, hidden.data(), tokens, 0, cache);
+        nano::Scratch scratch;
+        nano::layer_forward(engine.model(), 0, hidden.data(), tokens, 0, cache, scratch);
         check_close(hidden, want_out, 1e-4f, 1e-4f, "layer0 forward");
     }
 
