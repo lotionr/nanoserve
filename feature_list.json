@@ -226,7 +226,7 @@
         "Verify per-step logits with cache == logits recomputing the full sequence (exact match)",
         "Verify per-token wall time with cache is lower than without for a 128-token generation (assert, and print both numbers)"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F021",
