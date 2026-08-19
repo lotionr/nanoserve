@@ -585,3 +585,13 @@ Next: F013 (chat-template helper + golden ids via HF apply_chat_template —
   matmul/rmsnorm/softmax/silu vs numpy goldens — gen_golden.py needs an ops
   section) and F016 (RoPE). That unlocks the layer-forward chain F017-F019.
   Keep each op verified against a golden before wiring the next.
+
+### Session 9 — 2026-08-19 — F004 CI verified: 36/36 complete
+- Repo published to github.com/lotionr/nanoserve (user-authorized).
+- First CI run failed on ubuntu: GCC -Wsign-conversion on `diffs += cond ? 1 : 0`
+  (int -> size_t) in test_kvcache.cpp — Apple Clang never flagged it. Fixed with
+  an explicit branch (8fc0ace). Lesson: "warnings-as-errors clean" is per-compiler.
+- Second run green on ubuntu-latest AND macos-latest; model-dependent tests report
+  ***Skipped (exit 77 path) per F004's acceptance steps; 100% of 17 tests passed.
+- Feature list complete: 36/36. Remaining threads are optional perf work
+  (prefill GEMM blocking, last 1.34x q8 decode gap, Metal layer-batched dispatch).

@@ -46,7 +46,7 @@
         "Verify both ubuntu-latest and macos-latest jobs go green",
         "Verify model-dependent tests report SKIPPED, not FAILED, in CI logs"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F005",
