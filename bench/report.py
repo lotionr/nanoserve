@@ -89,10 +89,16 @@ def gap_statement(latest: dict) -> list[str]:
                 c = latest[cpu][phase]["mean"]
                 faster = "faster" if g > c else "slower"
                 ratio = g / c if g > c else c / g
-                lines.append(
-                    f"- **{prec} metal {name}:** {ratio:.2f}x {faster} than our "
-                    f"CPU path ({g:.1f} vs {c:.1f} tok/s)."
-                )
+                if ratio < 1.05:
+                    lines.append(
+                        f"- **{prec} metal {name}:** at parity with our CPU "
+                        f"path ({g:.1f} vs {c:.1f} tok/s)."
+                    )
+                else:
+                    lines.append(
+                        f"- **{prec} metal {name}:** {ratio:.2f}x {faster} than "
+                        f"our CPU path ({g:.1f} vs {c:.1f} tok/s)."
+                    )
     return lines
 
 
@@ -133,9 +139,9 @@ def render() -> str:
         "safetensors file nanoserve loads, so the fp32 row is like-for-like; "
         "the int8 WEIGHT formats are NOT identical (nanoserve: per-row "
         "scales, 8.0 bits/weight; llama.cpp Q8_0: per-32-block scales, 8.5 "
-        "bits/weight — finer-grained and slightly larger). Both engines "
-        "quantize activations to int8 per 32-value block at runtime and "
-        "compute the dot products with integer SIMD (sdot). nanoserve numbers "
+        "bits/weight — finer-grained and slightly larger). On the CPU, both "
+        "engines quantize activations to int8 per 32-value block at runtime "
+        "and compute the dot products with integer SIMD (sdot). nanoserve numbers "
         "come from the engine's internal prefill/decode timers on a real "
         "prompt; llama.cpp numbers come from `llama-bench` with the same "
         "token counts, threads, and repeat count (its decode test starts "
