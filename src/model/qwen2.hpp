@@ -109,13 +109,24 @@ private:
 /// matching torch.argmax, so greedy runs are comparable token by token.
 int32_t argmax(std::span<const float> logits);
 
+/// Timing split of one generation: prefill (time-to-first-token) vs decode
+/// (per-token latency). The two phases have very different cost profiles —
+/// prefill is O(prompt) work before anything appears, decode is one token's
+/// work per step — which is why serving systems report them separately.
+struct GenerateStats {
+    double ttft_ms = 0.0;          // prompt forward + first token pick
+    std::vector<double> step_ms;   // each subsequent decode step
+};
+
 /// Greedy decoding: prefill `prompt_ids`, then repeatedly append the argmax
 /// token, up to `max_new_tokens`. A generated stop id (eos) IS included in
 /// the returned tokens and ends the loop — the same contract as HF
 /// `generate()`, so outputs compare 1:1 against the golden.
+/// If `stats` is non-null it is filled with prefill/decode timings.
 std::vector<int32_t> greedy_generate(Engine& engine,
                                      std::span<const int32_t> prompt_ids,
                                      int64_t max_new_tokens,
-                                     std::span<const int32_t> stop_ids);
+                                     std::span<const int32_t> stop_ids,
+                                     GenerateStats* stats = nullptr);
 
 }  // namespace nano

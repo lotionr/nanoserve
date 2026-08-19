@@ -1,4 +1,65 @@
 ---
+Session: 2026-08-18 (Session 2 — Forward pass)
+Completed: F013-F021 (18/36 features passing; 8/8 ctest green)
+Notes:
+  - Venv gained torch 2.13 + transformers 5.15 (needed for HF-reference
+    goldens; transformers 5.x note: rope params live in cfg.rope_parameters,
+    apply_chat_template returns a BatchEncoding).
+  - F013 chat template: C++ helper renders the no-tools branch of the
+    tokenizer_config.json jinja (default/explicit system, multi-turn,
+    generation prompt) then encode_with_specials. 5 golden cases vs HF
+    apply_chat_template ids — exact.
+  - F015 ops (src/core/ops.*): linear (y=xW^T+b, HF [out,in] layout), matmul,
+    rmsnorm (double-accum mean), softmax, silu, add, mul vs numpy goldens at
+    rtol 1e-5. F016 RoPE mirrors HF's float32 angle math (powf/cosf/sinf on
+    float32 inv_freq) so q/k match transformers Qwen2RotaryEmbedding +
+    apply_rotary_pos_emb at rtol 1e-5 up to position 1000. test_ops, 45
+    checks, runs without model files.
+  - F017-F018 (src/model/qwen2.*): Qwen2Model loads all weights bf16->fp32
+    (~2GB, shape-checked); layer_forward = rmsnorm -> qkv+bias -> RoPE ->
+    causal GQA (14q/2kv, group 7) -> o_proj -> residual -> rmsnorm -> SwiGLU
+    -> residual; Engine = embed -> 24 layers -> final norm -> tied lm_head.
+    KV cache built in from day one (prefill and decode share forward()).
+    test_forward: embedding bit-exact vs HF layer-0 input; layer-0 out within
+    4.5e-5 abs — MEASURED HF's own fp32 noise vs a float64 recompute at
+    4.1e-5, so we sit at the noise floor (atol 1e-4 documented in the test);
+    logits argmax exact on 3 prompts, top-10 + 512-point strided sample at
+    1e-3.
+  - F019 greedy: test_generate reproduces HF fp32 greedy continuations
+    token-for-token on 4 prompts (3 stop at im_end, 1 full 32-token decode).
+    CLI: nanoserve generate <dir> -p <prompt> -n N --greedy [--stats].
+    GOLDEN-CAUGHT BUG: HF generate() applies generation_config.json's
+    repetition_penalty=1.1 even with do_sample=False — first golden wasn't
+    pure greedy and diverged on repeated tokens ("2+2": '+' got penalized).
+    gen_golden.py now pins repetition_penalty=1.0 with a comment.
+  - F014 Unicode: gen_unicode_tables.py generates unicode_tables.hpp
+    (660 \p{L} + 137 \p{N} ranges, binary search). ALSO required NFC: the
+    tokenizer.json declares an NFC normalizer — corpus caught decomposed
+    accents diverging. unicode.cpp implements UAX#15 (pre-expanded canonical
+    decompositions, ccc ordering, composition incl. algorithmic Hangul;
+    invalid UTF-8 passes through via byte sentinels). Corpus +18 non-ASCII
+    prompts (CJK/Cyrillic/Arabic/Devanagari/emoji ZWJ/NBSP/combining/math
+    alphanumerics), all exact; goldens store HF's "decoded" as the roundtrip
+    target since decode(encode(s)) == nfc(s). One-off fuzz: 300 random
+    multi-script strings vs HF via the CLI — 300/300 exact.
+  - F020 KV cache: test_kvcache proves cached decode logits are BIT-IDENTICAL
+    to full recompute (5 steps), and measured 320 ms/token cached vs ~32
+    s/token uncached at seq ~160 (printed by the test). Scalar fp32 baseline
+    — perf is F024-F027.
+  - F021 --stats: GenerateStats (ttft_ms + per-step ms) filled by
+    greedy_generate; CLI prints TTFT, mean/median ms/token, tok/s. Two runs:
+    8219/8169 ms TTFT, 310/320 ms/token mean (~3% apart, well under 20%).
+  - Numbers above are from test/CLI output on this machine, NOT bench-harness
+    results — do not put them in the README (rule stands until F030).
+  - ctest total is now ~4.5 min (forward/generate/kvcache dominate); fine for
+    init.sh, will shrink dramatically once F025/F026 land.
+Next: F022 (sampling: temperature/top-k/top-p with seeded RNG, test_sampling
+  with hand-built distributions + determinism checks), then F023 (streaming
+  callback + UTF-8-safe incremental CLI printing), then F024 (allocation-free
+  decode loop — scratch buffers currently live in layer_forward, move them
+  into Engine; test_alloc with a debug allocation counter). fp32 remains the
+  reference path for all of it.
+---
 Session: 2026-08-18 (Session 1 — Initializer)
 Completed: Project scaffolding + F001-F003, F005-F012 (11/36 features passing)
 Notes:

@@ -6,6 +6,7 @@
 //   nanoserve version
 //
 // `serve` arrives with the HTTP endpoint (see feature_list.json).
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -31,7 +32,7 @@ int usage() {
                  "usage:\n"
                  "  nanoserve inspect  <file.safetensors>\n"
                  "  nanoserve tokenize <model_dir> <text>\n"
-                 "  nanoserve generate <model_dir> -p <prompt> [-n max_tokens] [--greedy]\n"
+                 "  nanoserve generate <model_dir> -p <prompt> [-n max_tokens] [--greedy] [--stats]\n"
                  "  nanoserve version\n",
                  static_cast<int>(kVersion.size()), kVersion.data());
     return 2;
@@ -91,6 +92,7 @@ int cmd_generate(const std::vector<std::string>& args) {
     std::string model_dir;
     std::string prompt;
     int64_t max_tokens = 32;
+    bool stats = false;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "-p" && i + 1 < args.size()) {
             prompt = args[++i];
@@ -98,6 +100,8 @@ int cmd_generate(const std::vector<std::string>& args) {
             max_tokens = std::atoll(args[++i].c_str());
         } else if (args[i] == "--greedy") {
             // default; nothing to do
+        } else if (args[i] == "--stats") {
+            stats = true;
         } else if (model_dir.empty() && args[i][0] != '-') {
             model_dir = args[i];
         } else {
@@ -118,8 +122,9 @@ int cmd_generate(const std::vector<std::string>& args) {
     nano::Engine engine(model_dir);
     const std::vector<int32_t> stop_ids = {tok.special_id("<|im_end|>"),
                                            tok.special_id("<|endoftext|>")};
-    const std::vector<int32_t> generated =
-        nano::greedy_generate(engine, prompt_ids, max_tokens, stop_ids);
+    nano::GenerateStats gen_stats;
+    const std::vector<int32_t> generated = nano::greedy_generate(
+        engine, prompt_ids, max_tokens, stop_ids, stats ? &gen_stats : nullptr);
 
     std::printf("prompt tokens: %zu, generated tokens: %zu\n", prompt_ids.size(),
                 generated.size());
@@ -128,6 +133,22 @@ int cmd_generate(const std::vector<std::string>& args) {
         std::printf(" %d", id);
     }
     std::printf("\n---\n%s\n", tok.decode(generated).c_str());
+
+    if (stats && !generated.empty()) {
+        std::vector<double> steps = gen_stats.step_ms;
+        std::sort(steps.begin(), steps.end());
+        double sum = 0.0;
+        for (double ms : steps) {
+            sum += ms;
+        }
+        const double mean = steps.empty() ? 0.0 : sum / static_cast<double>(steps.size());
+        const double median = steps.empty() ? 0.0 : steps[steps.size() / 2];
+        std::printf("---\nttft (prefill %zu tokens): %.1f ms\n", prompt_ids.size(),
+                    gen_stats.ttft_ms);
+        std::printf("decode: %zu steps, mean %.1f ms/token, median %.1f ms/token "
+                    "(%.2f tok/s)\n",
+                    steps.size(), mean, median, mean > 0.0 ? 1000.0 / mean : 0.0);
+    }
     return 0;
 }
 

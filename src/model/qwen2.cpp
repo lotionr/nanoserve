@@ -1,5 +1,6 @@
 #include "model/qwen2.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -210,11 +211,27 @@ int32_t argmax(std::span<const float> logits) {
 std::vector<int32_t> greedy_generate(Engine& engine,
                                      std::span<const int32_t> prompt_ids,
                                      int64_t max_new_tokens,
-                                     std::span<const int32_t> stop_ids) {
+                                     std::span<const int32_t> stop_ids,
+                                     GenerateStats* stats) {
+    const auto now = std::chrono::steady_clock::now;
+    const auto to_ms = [](auto d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+    };
+
     std::vector<int32_t> out;
+    auto t0 = now();
     std::span<const float> logits = engine.forward(prompt_ids);
     for (int64_t i = 0; i < max_new_tokens; ++i) {
         const int32_t next = argmax(logits);
+        if (stats) {
+            // First token closes the prefill phase; the rest are decode steps.
+            const double ms = to_ms(now() - t0);
+            if (i == 0) {
+                stats->ttft_ms = ms;
+            } else {
+                stats->step_ms.push_back(ms);
+            }
+        }
         out.push_back(next);
         bool stop = false;
         for (int32_t s : stop_ids) {
@@ -223,6 +240,7 @@ std::vector<int32_t> greedy_generate(Engine& engine,
         if (stop) {
             break;
         }
+        t0 = now();
         const int32_t fed[] = {next};
         logits = engine.forward(fed);
     }

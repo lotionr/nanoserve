@@ -237,7 +237,7 @@
         "Verify TTFT (prefill) and mean/median decode ms/token are printed",
         "Verify the numbers are plausible and stable across two runs (within 20%)"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F022",
