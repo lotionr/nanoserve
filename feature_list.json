@@ -399,7 +399,7 @@
         "Verify stream:true produces SSE chunks token by token",
         "Run test_server via ctest (spawns server, requests, checks response)"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F036",

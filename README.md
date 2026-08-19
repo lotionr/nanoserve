@@ -79,7 +79,16 @@ Current state (kept honest; see `feature_list.json` for the full sequenced list)
       preallocation (test prints both); allocator invariants (no unbacked or
       double-allocated page, exact reuse after free) survive a model-free
       alloc/free churn test across interleaved sequences (`test_paged_alloc`)
-- [ ] Stretch: HTTP serving endpoint
+- [x] HTTP serving endpoint: `nanoserve serve <model_dir>` exposes
+      `POST /v1/completions` (the classic OpenAI completions schema — prompt,
+      max_tokens, temperature/top_k/top_p/seed, usage counts) with `stream:true`
+      delivering Server-Sent Events token by token; HTTP/1.1 server written on
+      raw POSIX sockets like everything else here. The engine serves from the
+      paged KV cache. End-to-end test spawns the real binary and speaks real
+      HTTP: schema and usage checked against a locally loaded tokenizer, greedy
+      determinism across requests, streamed chunks reassembling to the
+      non-streamed text, and the 400/404/405 error paths
+- [ ] Stretch: continuous batching in the server
 
 ## Benchmarks
 
