@@ -267,6 +267,52 @@ int main() {
                        "threaded matmul not bit-identical");
     }
 
+    {  // F036: batched linear (tokens = n) is bit-identical, row for row, to
+        // n separate single-row calls. Continuous batching's determinism
+        // rests on exactly this: a sequence decoded inside a batch must see
+        // bit-identical logits to the same sequence decoded alone (the GEMM
+        // path is the GEMV path run over more rows — no re-blocking), so this
+        // is asserted, not assumed. Checked for the fp32 kernel and the int8
+        // kernel (whose per-row activation quantization is also row-local).
+        std::mt19937 gen(20260819);
+        std::normal_distribution<float> dist(0.0f, 1.0f);
+        const int64_t tokens = 4, d_in = 896, d_out = 1151;  // odd split again
+        std::vector<float> x(static_cast<size_t>(tokens * d_in));
+        std::vector<float> w(static_cast<size_t>(d_out * d_in));
+        std::vector<float> bias(static_cast<size_t>(d_out));
+        for (auto* v : {&x, &w, &bias}) {
+            for (float& f : *v) {
+                f = dist(gen);
+            }
+        }
+        nano::ops::set_num_threads(0);
+
+        std::vector<float> batched(static_cast<size_t>(tokens * d_out));
+        nano::ops::linear(x.data(), w.data(), bias.data(), batched.data(), tokens,
+                          d_in, d_out);
+        std::vector<float> row(static_cast<size_t>(d_out));
+        for (int64_t t = 0; t < tokens; ++t) {
+            nano::ops::linear(x.data() + t * d_in, w.data(), bias.data(), row.data(),
+                              1, d_in, d_out);
+            NANO_CHECK_MSG(std::memcmp(row.data(), batched.data() + t * d_out,
+                                       row.size() * sizeof(float)) == 0,
+                           "fp32 GEMM row %lld != the same row via GEMV",
+                           static_cast<long long>(t));
+        }
+
+        const nano::QuantMatrix qw = nano::quantize_rows(w.data(), d_out, d_in);
+        nano::ops::linear_q8(x.data(), qw.q.data(), qw.scales.data(), bias.data(),
+                             batched.data(), tokens, d_in, d_out);
+        for (int64_t t = 0; t < tokens; ++t) {
+            nano::ops::linear_q8(x.data() + t * d_in, qw.q.data(), qw.scales.data(),
+                                 bias.data(), row.data(), 1, d_in, d_out);
+            NANO_CHECK_MSG(std::memcmp(row.data(), batched.data() + t * d_out,
+                                       row.size() * sizeof(float)) == 0,
+                           "int8 GEMM row %lld != the same row via GEMV",
+                           static_cast<long long>(t));
+        }
+    }
+
     {  // F026: SIMD kernels agree with an independent scalar reference.
         // ops::dot is NEON on arm64; this reference is the plain loop it
         // replaced, so the check is meaningful on both architectures (on x86
