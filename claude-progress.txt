@@ -1,4 +1,91 @@
 ---
+Session: 2026-08-19 (Session 3 — Sampling, streaming, and the perf arc)
+Completed: F022-F026 (25/36 features passing; 12/12 ctest green)
+Notes:
+  - F022 sampling (src/model/sampler.*): temperature -> top-k -> top-p in HF's
+    warper order, then renormalize and draw. Verified two ways: 9 golden
+    distributions from transformers' Temperature/TopK/TopP warpers
+    (gen_golden.py::gen_sampling_golden, tests/data/sampling_golden.json —
+    candidate SET must match exactly, probs to 1e-6), plus hand-built
+    distributions for the edges. PROBED HF FIRST to pin the top-p rule: a
+    token is kept while the cumulative probability BEFORE it is < top_p, so
+    the crossing token is included (TopPLogitsWarper with p=[.5,.3,.2] and
+    top_p=0.5 keeps exactly one token). Golden cases deliberately avoid ties
+    and exact cumsum boundaries — there HF depends on torch's unstable sort,
+    so a golden would be testing noise; our own tie rule (lower id wins) is
+    pinned by a separate hand-built check. Determinism: mt19937_64 + a
+    hand-rolled uniform from the top 53 bits (NOT
+    uniform_real_distribution, whose mapping is implementation-defined).
+    test_sampling, 1076 checks, needs no model files. CLI: --temp/--top-k/
+    --top-p/--seed; verified seed 1 twice == identical ids, seed 2 differs.
+  - F023 streaming: generate() gained a TokenCallback fired per token before
+    the next forward. StreamDecoder (tokenizer.*) holds back an incomplete
+    trailing UTF-8 sequence until its continuation bytes arrive. test_streaming
+    runs it over every committed corpus (English + unicode + specials + the HF
+    greedy golden): each chunk must be structurally complete UTF-8 and the
+    concatenation byte-identical to batch decode(). It also ASSERTS the
+    hold-back path actually fired on the unicode corpus, so the test can't
+    pass vacuously, and covers a 4-byte emoji arriving one byte-token at a
+    time plus flush() of a stream cut mid-character. One-off: CLI generating
+    Chinese output arrived in 25 separate read bursts (incremental, not
+    buffered), decoded clean.
+  - F024 allocation-free decode: layer_forward's per-call vectors moved into
+    a Scratch struct owned by Engine; ensure() only grows, and the attention
+    score row is sized to max_seq up front so it can't regrow mid-generation.
+    test_alloc replaces GLOBAL operator new with a counter — with a canary
+    check first, so a zero-count can't pass vacuously — and reports 0
+    allocations across 16 greedy + 16 sampling decode steps, plus the F019
+    golden reproducing exactly. Perf was UNCHANGED by this refactor alone
+    (307 -> ~307 ms/token): the scalar matmul dominated. It is a prerequisite,
+    not a win — the payoff is stable buffers for threading/SIMD.
+  - F025 threading (src/core/threadpool.*): workers created once, parked on a
+    condvar; a task is a function pointer + a ctx pointer to the caller's
+    stack, so parallel_for allocates nothing (test_alloc still reports 0 with
+    the pool live). linear() splits output columns, matmul() splits rows, so
+    every element is computed by exactly one thread running the same serial
+    kernel — test_ops asserts memcmp-identical output at 2/5/hardware threads
+    on shapes whose sizes divide evenly by none of them. Small calls stay
+    serial below a work threshold. CLI --threads N.
+  - F026 SIMD: dot_f32 with four independent NEON accumulators (one
+    accumulator would serialize on fmla latency); linear, the attention score
+    loop, and rmsnorm all use it. rmsnorm keeps its DOUBLE sum-of-squares
+    accumulator (via float64x2 lanes) — fp32 accumulation over 896 values
+    drifts enough to threaten the golden. SIMD changes reduction order, so
+    parity is by tolerance not memcmp: test_ops compares against an in-test
+    scalar reference at lengths straddling the 16/4-wide unrolls, AND a
+    second ctest target test_ops_scalar builds the same sources with
+    NANO_FORCE_SCALAR so this arm64 machine actually executes the fallback
+    path x86 CI will take, instead of assuming it compiles.
+  - MEASURED THIS MACHINE (M3 Pro, 5 perf + 6 efficiency, 11 threads),
+    bench/bench_ops.cpp medians of 20 reps. NOT bench-harness results — the
+    README rule stands until F030, and nothing below is in the README.
+      lm_head GEMV [151936x896], single thread: 84.4 ms scalar -> 8.34 ms
+        NEON = 10.1x. Threaded on top: 4.82 ms.
+      Threading speedup depends on regime, and this is the interesting part:
+        compute-bound prefill GEMMs (tokens=41) get 4.35-4.68x, but
+        decode GEMVs (tokens=1) only 1.7-2.5x — once SIMD removes the compute
+        bottleneck, decode is memory-bandwidth bound (each weight is read once
+        per token). F025's >=2.5x criterion was met against the scalar
+        baseline it was written for (6.24x on lm_head then); post-SIMD the
+        honest number for decode GEMV is ~1.7x, and prefill still clears 2.5x.
+      End-to-end greedy, 41-token prompt, 32 new tokens:
+        before session:      307 ms/token, TTFT ~10.0 s
+        after F024:          ~307 ms/token, TTFT ~10.0 s (no change, expected)
+        after F025:          64 ms/token,  TTFT 1.8 s
+        after F026:          21.9 ms/token, TTFT 0.26 s   (14x / 38x overall)
+      Side effect: ctest total 267 s -> 23.5 s (test_kvcache 183 s -> 9.5 s).
+  - Every HF golden (layer, logits, greedy continuations, tokenizer) is
+    unchanged through all five features — the SIMD reduction-order change
+    shifted no token.
+  - README Status list updated to reflect F013-F026 (feature status only, no
+    numbers).
+Next: F027 (int8 weight quantization — per-row scales, offline pass +
+  quantized matmul; check dequant error, verify top-1 unchanged on the golden
+  prompts, and measure fp32 vs int8 tok/s. Note decode is now bandwidth bound,
+  so int8 should help decode MORE than its flop count suggests — that is the
+  hypothesis to test). Then F028-F029 (pybind11 bindings + Python streaming),
+  then F030 (the bench harness, which is what finally unlocks README numbers).
+---
 Session: 2026-08-18 (Session 2 — Forward pass)
 Completed: F013-F021 (20/36 features passing; 8/8 ctest green)
 Notes:

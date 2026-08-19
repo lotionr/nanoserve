@@ -249,7 +249,7 @@
         "Verify top-k/top-p restrict the candidate set correctly on hand-built distributions",
         "Verify two runs with the same seed produce identical outputs, different seeds differ"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F023",
@@ -260,7 +260,7 @@
         "Verify multi-byte UTF-8 characters split across tokens render correctly",
         "Run test_streaming via ctest verifying callback ordering and byte-exact final text"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F024",
@@ -271,7 +271,7 @@
         "Verify allocation count during 16 decode steps is zero after warmup",
         "Verify generation output is unchanged from before the refactor"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F025",
@@ -283,7 +283,7 @@
         "Verify >=2.5x speedup and record the measured number in the progress log",
         "Verify end-to-end generate output is unchanged"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F026",
@@ -295,7 +295,7 @@
         "Verify speedup > 1.5x on the GEMV shapes and record measured numbers in the progress log",
         "Verify the scalar fallback path still compiles and passes on x86 CI"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F027",
