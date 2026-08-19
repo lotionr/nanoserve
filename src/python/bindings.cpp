@@ -40,6 +40,7 @@ double ms_since(std::chrono::steady_clock::time_point t0) {
 struct GenerateResult {
     std::string text;                // stop tokens excluded
     std::vector<int32_t> token_ids;  // stop token included (matches HF/CLI)
+    int64_t prompt_tokens = 0;       // chat-template ids fed as prefill
     double ttft_ms = 0.0;
     double tokens_per_second = 0.0;
 };
@@ -167,6 +168,7 @@ public:
 
     const std::string& text() const { return text_; }
     const std::vector<int32_t>& token_ids() const { return token_ids_; }
+    int64_t prompt_tokens() const { return static_cast<int64_t>(prompt_ids_.size()); }
     double ttft_ms() const { return ttft_ms_; }
     double tokens_per_second() const {
         return decode_ms_ > 0.0 ? 1000.0 * static_cast<double>(decode_steps_) / decode_ms_
@@ -209,6 +211,7 @@ GenerateResult Engine::generate(const std::string& prompt, int64_t max_tokens,
 
     GenerateResult r;
     r.token_ids = out;
+    r.prompt_tokens = static_cast<int64_t>(ids.size());
     std::vector<int32_t> printable;
     printable.reserve(out.size());
     for (int32_t id : out) {
@@ -249,6 +252,7 @@ PYBIND11_MODULE(_nanoserve, m) {
     py::class_<GenerateResult>(m, "GenerateResult")
         .def_readonly("text", &GenerateResult::text)
         .def_readonly("token_ids", &GenerateResult::token_ids)
+        .def_readonly("prompt_tokens", &GenerateResult::prompt_tokens)
         .def_readonly("ttft_ms", &GenerateResult::ttft_ms)
         .def_readonly("tokens_per_second", &GenerateResult::tokens_per_second)
         .def("__repr__", [](const GenerateResult& r) {
@@ -263,6 +267,7 @@ PYBIND11_MODULE(_nanoserve, m) {
         .def("__next__", &TokenStream::next)
         .def_property_readonly("text", &TokenStream::text)
         .def_property_readonly("token_ids", &TokenStream::token_ids)
+        .def_property_readonly("prompt_tokens", &TokenStream::prompt_tokens)
         .def_property_readonly("ttft_ms", &TokenStream::ttft_ms)
         .def_property_readonly("tokens_per_second", &TokenStream::tokens_per_second);
 

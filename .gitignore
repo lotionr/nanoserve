@@ -25,3 +25,7 @@ bench/results/
 compile_commands.json
 .vscode/
 .idea/
+
+# llama.cpp comparison baseline (built by bench/setup_llamacpp.sh)
+bench/llama.cpp/
+bench/models/

@@ -342,7 +342,7 @@
         "Verify a readable table (mean +/- std) is printed",
         "Verify repeat-to-repeat variance < 10% or flagged in output"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F031",
@@ -354,7 +354,7 @@
         "Verify the harness records llama.cpp version, build flags, and settings in the JSON",
         "Verify a combined comparison table prints both engines side by side"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F032",
@@ -365,7 +365,7 @@
         "Verify the README shows tok/s + TTFT for nanoserve and llama.cpp with the exact repro command and hardware/versions",
         "Verify no number in the README was hand-typed (all injected from results JSON)"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F033",
