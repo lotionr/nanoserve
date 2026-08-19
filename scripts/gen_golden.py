@@ -146,6 +146,116 @@ def gen_chat_golden() -> None:
     print(f"wrote {path} ({len(cases)} cases)")
 
 
+def _floats(a) -> list:
+    """np array -> JSON list. fp32 values roundtrip exactly through doubles."""
+    return [float(x) for x in np.asarray(a, dtype=np.float32).ravel()]
+
+
+def gen_ops_golden() -> None:
+    """numpy reference outputs for the core fp32 ops (F015).
+
+    Shapes are small enough to commit as JSON but representative of the model
+    (dim 896 rmsnorm rows, head_dim 64 attention rows). Odd matmul sizes catch
+    indexing bugs that square shapes hide.
+    """
+    rng = np.random.default_rng(20260818)
+    f32 = lambda a: np.asarray(a, dtype=np.float32)  # noqa: E731
+    out = {"source": "numpy " + np.__version__}
+
+    # linear: y = x @ W^T + bias, W stored [d_out, d_in] (HF nn.Linear layout)
+    t, d_in, d_out = 3, 64, 48
+    x = f32(rng.standard_normal((t, d_in)))
+    w = f32(rng.standard_normal((d_out, d_in)))
+    b = f32(rng.standard_normal(d_out))
+    y = f32(x.astype(np.float64) @ w.astype(np.float64).T + b)
+    out["linear"] = {
+        "tokens": t, "d_in": d_in, "d_out": d_out,
+        "x": _floats(x), "w": _floats(w), "bias": _floats(b), "y": _floats(y),
+    }
+
+    # matmul: c = a @ b, deliberately odd sizes
+    m, k, n = 5, 33, 17
+    a = f32(rng.standard_normal((m, k)))
+    bb = f32(rng.standard_normal((k, n)))
+    c = f32(a.astype(np.float64) @ bb.astype(np.float64))
+    out["matmul"] = {
+        "m": m, "k": k, "n": n,
+        "a": _floats(a), "b": _floats(bb), "c": _floats(c),
+    }
+
+    # rmsnorm at the real model width and eps
+    t, dim, eps = 3, 896, 1e-6
+    x = f32(rng.standard_normal((t, dim)) * 3.0)
+    w = f32(rng.standard_normal(dim))
+    var = np.mean(x.astype(np.float64) ** 2, axis=-1, keepdims=True)
+    y = f32(x.astype(np.float64) / np.sqrt(var + eps) * w.astype(np.float64))
+    out["rmsnorm"] = {
+        "tokens": t, "dim": dim, "eps": eps,
+        "x": _floats(x), "weight": _floats(w), "y": _floats(y),
+    }
+
+    # softmax over one attention-score row (head_dim-ish length, wide range)
+    x = f32(rng.standard_normal(64) * 10.0)
+    e = np.exp(x.astype(np.float64) - x.max())
+    out["softmax"] = {"x": _floats(x), "y": _floats(e / e.sum())}
+
+    # silu across the active range
+    x = f32(np.linspace(-8.0, 8.0, 101))
+    xd = x.astype(np.float64)
+    out["silu"] = {"x": _floats(x), "y": _floats(xd / (1.0 + np.exp(-xd)))}
+
+    # elementwise add / mul (residual + SwiGLU gate)
+    a = f32(rng.standard_normal(64))
+    b = f32(rng.standard_normal(64))
+    out["add"] = {"a": _floats(a), "b": _floats(b), "y": _floats(a + b)}
+    out["mul"] = {"a": _floats(a), "b": _floats(b), "y": _floats(a * b)}
+
+    path = DATA_DIR / "ops_golden.json"
+    path.write_text(json.dumps(out))
+    print(f"wrote {path}")
+
+
+def gen_rope_golden() -> None:
+    """RoPE reference from the actual HF Qwen2 implementation (F016)."""
+    import torch
+    from transformers import AutoConfig
+    from transformers.models.qwen2.modeling_qwen2 import (
+        Qwen2RotaryEmbedding,
+        apply_rotary_pos_emb,
+    )
+
+    cfg = AutoConfig.from_pretrained(str(MODEL_DIR))
+    rot = Qwen2RotaryEmbedding(config=cfg)
+
+    torch.manual_seed(20260818)
+    positions = [0, 1, 2, 3, 17, 100, 1000]
+    n_heads, n_kv_heads, head_dim = 14, 2, 64
+    seq = len(positions)
+    q = torch.randn(1, n_heads, seq, head_dim, dtype=torch.float32)
+    k = torch.randn(1, n_kv_heads, seq, head_dim, dtype=torch.float32)
+    pos_ids = torch.tensor([positions])
+    cos, sin = rot(torch.zeros(1, seq, head_dim), pos_ids)
+    q_rot, k_rot = apply_rotary_pos_emb(q, k, cos, sin)
+
+    def per_token(x: torch.Tensor) -> list:
+        # [1, H, T, D] -> per token [H, D], the layout the C++ engine uses.
+        return [_floats(x[0, :, t, :].numpy()) for t in range(seq)]
+
+    out = {
+        "source": "transformers Qwen2RotaryEmbedding + apply_rotary_pos_emb",
+        "rope_theta": cfg.rope_parameters["rope_theta"],
+        "head_dim": head_dim,
+        "n_heads": n_heads,
+        "n_kv_heads": n_kv_heads,
+        "positions": positions,
+        "q_in": per_token(q), "q_out": per_token(q_rot),
+        "k_in": per_token(k), "k_out": per_token(k_rot),
+    }
+    path = DATA_DIR / "rope_golden.json"
+    path.write_text(json.dumps(out))
+    print(f"wrote {path}")
+
+
 def gen_embed_golden() -> None:
     """First N bf16 values of model.embed_tokens.weight, widened to fp32.
 
@@ -187,6 +297,8 @@ def main() -> None:
     gen_tokenizer_golden()
     gen_chat_golden()
     gen_embed_golden()
+    gen_ops_golden()
+    gen_rope_golden()
 
 
 if __name__ == "__main__":

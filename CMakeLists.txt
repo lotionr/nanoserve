@@ -21,6 +21,7 @@ target_compile_options(nanoserve_warnings INTERFACE
 add_library(nanoserve_core STATIC
     src/core/json.cpp
     src/core/mmap_file.cpp
+    src/core/ops.cpp
     src/core/safetensors.cpp
     src/model/chat_template.cpp
     src/model/config.cpp
@@ -49,6 +50,7 @@ if(NANOSERVE_BUILD_TESTS)
     endfunction()
 
     nanoserve_test(test_json)
+    nanoserve_test(test_ops)
     nanoserve_test(test_safetensors)
     nanoserve_test(test_config)
     nanoserve_test(test_tokenizer)

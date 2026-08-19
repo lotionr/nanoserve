@@ -170,7 +170,7 @@
         "Run test_ops via ctest",
         "Verify each op matches numpy within 1e-5 relative tolerance on random inputs of representative shapes"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F016",
@@ -181,7 +181,7 @@
         "Run test_ops via ctest",
         "Verify rotated q/k match within 1e-5 for several positions and head dims"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F017",
