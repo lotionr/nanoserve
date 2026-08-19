@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "core/metal.hpp"
 #include "core/ops.hpp"
 #include "core/quant.hpp"
 #include "core/safetensors.hpp"
@@ -62,6 +63,43 @@ void linear(const Weight& w, const float* x, const float* bias, float* y,
         ops::linear_q8(x, w.q8.data(), w.scales.data(), bias, y, tokens, w.cols, w.rows);
     } else {
         ops::linear(x, w.f32.data(), bias, y, tokens, w.cols, w.rows);
+    }
+}
+
+/// Walks every buffer the GPU kernels might bind — weight matrices (fp32 or
+/// int8 + scales) and the qkv biases — and registers or unregisters each
+/// with the metal backend. Norms are skipped: rmsnorm always runs on the
+/// CPU. Registering is idempotent and unregistering unknown pointers is a
+/// no-op, so the walk doesn't need to know which calls the size floor will
+/// actually send to the GPU.
+void register_model_weights(const Qwen2Model& m, bool reg) {
+    const auto one = [&](const void* ptr, size_t bytes) {
+        if (reg) {
+            metal::register_weights(ptr, bytes);
+        } else {
+            metal::unregister_weights(ptr);
+        }
+    };
+    const auto weight = [&](const Weight& w) {
+        if (w.quantized()) {
+            one(w.q8.data(), w.q8.size());
+            one(w.scales.data(), w.scales.size() * sizeof(float));
+        } else {
+            one(w.f32.data(), w.f32.size() * sizeof(float));
+        }
+    };
+    weight(m.embed_tokens);   // also the lm_head (tied)
+    for (const LayerWeights& l : m.layers) {
+        weight(l.q_w);
+        weight(l.k_w);
+        weight(l.v_w);
+        weight(l.o_w);
+        weight(l.gate_w);
+        weight(l.up_w);
+        weight(l.down_w);
+        one(l.q_b.data(), l.q_b.size() * sizeof(float));
+        one(l.k_b.data(), l.k_b.size() * sizeof(float));
+        one(l.v_b.data(), l.v_b.size() * sizeof(float));
     }
 }
 
@@ -244,6 +282,18 @@ Engine::Engine(const std::string& model_dir, int64_t max_seq,
                const std::string& weights_file)
     : model_(Qwen2Model::load(model_dir, weights_file)), cache_(model_.config, max_seq) {
     logits_.resize(static_cast<size_t>(model_.config.vocab_size));
+    if (ops::backend() == ops::Backend::metal) {
+        register_model_weights(model_, /*reg=*/true);
+        gpu_registered_ = true;
+    }
+}
+
+Engine::~Engine() {
+    if (gpu_registered_) {
+        // Runs before the member destructors free the weight vectors, so
+        // the GPU registry never points at freed memory.
+        register_model_weights(model_, /*reg=*/false);
+    }
 }
 
 void Engine::embed(std::span<const int32_t> ids, float* out) const {

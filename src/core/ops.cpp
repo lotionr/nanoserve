@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 
+#include "core/metal.hpp"
 #include "core/quant.hpp"
 #include "core/threadpool.hpp"
 
@@ -49,6 +50,24 @@ ThreadPool& pool() {
 /// a few microseconds, which only pays for itself on the bigger projections
 /// (decode-step q/o/MLP/lm_head), not on tiny per-token k/v rows.
 constexpr int64_t kParallelThreshold = 1 << 19;
+
+Backend g_backend = Backend::cpu;
+
+/// Below this many multiply-adds a call stays on the CPU even when the
+/// metal backend is selected — the GPU analog of kParallelThreshold, for a
+/// much bigger fixed cost: one encode + commit + waitUntilCompleted
+/// round-trip (tens of microseconds at best) instead of a pool wakeup.
+/// Same value as kParallelThreshold: it keeps the tiny decode-step k/v
+/// projections (1 x 896 x 128 ≈ 115K MACs) on the CPU while everything
+/// from a decode q_proj (1 x 896 x 896 ≈ 800K) up goes to the GPU. This is
+/// a floor for correctness of the COST model, not a tuning knob — the
+/// bench measures the backend as configured here.
+constexpr int64_t kMetalMinMacs = 1 << 19;
+
+/// True when this call should take the GPU path.
+bool use_metal(int64_t macs) {
+    return g_backend == Backend::metal && macs >= kMetalMinMacs;
+}
 
 /// Dot product of two contiguous fp32 vectors — the inner loop of every
 /// projection, and where essentially all decode time goes.
@@ -244,8 +263,22 @@ void set_num_threads(int n) {
 
 int num_threads() { return pool().threads(); }
 
+bool set_backend(Backend b) {
+    if (b == Backend::metal && !metal::available()) {
+        return false;
+    }
+    g_backend = b;
+    return true;
+}
+
+Backend backend() { return g_backend; }
+
 void linear(const float* x, const float* w, const float* bias, float* y,
             int64_t tokens, int64_t d_in, int64_t d_out) {
+    if (use_metal(tokens * d_in * d_out)) {
+        metal::linear_f32(x, w, bias, y, tokens, d_in, d_out);
+        return;
+    }
     if (tokens * d_in * d_out < kParallelThreshold) {
         linear_range(x, w, bias, y, tokens, d_in, d_out, 0, d_out);
         return;
@@ -261,6 +294,13 @@ void linear(const float* x, const float* w, const float* bias, float* y,
 void linear_q8(const float* x, const int8_t* w, const float* scales,
                const float* bias, float* y, int64_t tokens, int64_t d_in,
                int64_t d_out) {
+    // GPU path first: it works from the fp32 activations directly (no
+    // activation quantization — see metal.hpp for why), so it must branch
+    // BEFORE the CPU path's quantize step below.
+    if (use_metal(tokens * d_in * d_out)) {
+        metal::linear_q8(x, w, scales, bias, y, tokens, d_in, d_out);
+        return;
+    }
     // Quantize each activation row once, up front and serial: O(tokens*d_in)
     // work that unlocks O(tokens*d_in*d_out) integer dots. In decode
     // (tokens=1) this is one absmax pass + one rounding pass over d_in

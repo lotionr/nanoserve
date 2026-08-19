@@ -22,6 +22,22 @@ namespace nano::ops {
 void set_num_threads(int n);
 int num_threads();
 
+/// Where linear()/linear_q8() run (F033). cpu = the NEON/scalar kernels
+/// below; metal = M-series GPU for calls big enough to amortize a dispatch
+/// (small calls always keep the CPU path — see kMetalMinMacs in ops.cpp).
+/// Everything else in the forward pass stays on the CPU either way.
+enum class Backend { cpu, metal };
+
+/// Selects the backend. Returns false — and leaves the backend unchanged —
+/// if `b` is metal and no usable Metal device exists, so callers can fall
+/// back explicitly instead of silently computing on the wrong device.
+/// Select the backend BEFORE constructing an Engine: the Engine registers
+/// its weights with the GPU at construction time (a later switch still
+/// computes correctly, but re-copies weights every call).
+/// Not thread-safe; orchestrating thread only, like set_num_threads.
+bool set_backend(Backend b);
+Backend backend();
+
 /// Dot product of two contiguous fp32 vectors (NEON-accelerated on arm64,
 /// scalar elsewhere). Exposed because attention scores are dot products too.
 float dot(const float* a, const float* b, int64_t n);

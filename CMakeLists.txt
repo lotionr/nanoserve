@@ -34,6 +34,21 @@ set(NANOSERVE_CORE_SOURCES
     src/model/unicode.cpp
 )
 
+# Metal backend (F033): Objective-C++ on Apple (the MSL kernels are embedded
+# in metal.mm and compiled at runtime — no .metallib build step), a stub that
+# reports "unavailable" everywhere else. Both nanoserve_core variants get it:
+# the GPU path is orthogonal to the CPU SIMD-vs-scalar split.
+if(APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    list(APPEND NANOSERVE_CORE_SOURCES src/core/metal.mm)
+    set_source_files_properties(src/core/metal.mm PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc")
+else()
+    list(APPEND NANOSERVE_CORE_SOURCES src/core/metal_stub.cpp)
+endif()
+
 add_library(nanoserve_core STATIC ${NANOSERVE_CORE_SOURCES})
 target_include_directories(nanoserve_core PUBLIC src)
 target_link_libraries(nanoserve_core PRIVATE nanoserve_warnings)
@@ -45,6 +60,15 @@ add_library(nanoserve_core_scalar STATIC ${NANOSERVE_CORE_SOURCES})
 target_include_directories(nanoserve_core_scalar PUBLIC src)
 target_compile_definitions(nanoserve_core_scalar PUBLIC NANO_FORCE_SCALAR=1)
 target_link_libraries(nanoserve_core_scalar PRIVATE nanoserve_warnings)
+
+if(APPLE)
+    # PUBLIC: every executable that links a core library needs the
+    # frameworks metal.mm calls into.
+    target_link_libraries(nanoserve_core PUBLIC
+        "-framework Metal" "-framework Foundation")
+    target_link_libraries(nanoserve_core_scalar PUBLIC
+        "-framework Metal" "-framework Foundation")
+endif()
 
 # --- CLI --------------------------------------------------------------------
 add_executable(nanoserve src/server/main.cpp)
@@ -98,6 +122,7 @@ if(NANOSERVE_BUILD_TESTS)
     nanoserve_test(test_streaming)
     nanoserve_test(test_alloc)
     nanoserve_test(test_quant)
+    nanoserve_test(test_metal)   # skips (77) without a Metal device
 
     # The scalar fallback runs the same op goldens (F026): if SIMD and scalar
     # ever disagree beyond tolerance, one of these two tests fails.

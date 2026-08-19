@@ -134,8 +134,19 @@ class Engine {
 public:
     /// `weights_file` empty = model.safetensors (fp32); pass an int8 file
     /// from `nanoserve quantize` to run quantized (F027).
+    /// If the metal backend is selected (ops::set_backend, F033) when this
+    /// runs, every weight buffer is registered with the GPU here — on
+    /// unified memory that is a zero-copy page wrap for the big matrices,
+    /// so "upload" costs nothing and happens once, at load time.
     explicit Engine(const std::string& model_dir, int64_t max_seq = 2048,
                     const std::string& weights_file = "");
+
+    /// Unregisters the GPU-resident weights (registered iff the metal
+    /// backend was selected at construction) BEFORE the vectors that back
+    /// them are freed — the registry must never hold a dangling pointer.
+    ~Engine();
+    Engine(const Engine&) = delete;             // registry holds our pointers
+    Engine& operator=(const Engine&) = delete;
 
     /// Appends `ids` to the sequence, runs the forward pass over them, and
     /// returns the logits ([vocab_size]) for the last token fed.
@@ -153,6 +164,7 @@ public:
 private:
     Qwen2Model model_;
     KvCache cache_;
+    bool gpu_registered_ = false;  // weights registered with the metal backend
     int64_t seq_len_ = 0;         // tokens already in the cache
     Scratch scratch_;             // per-layer work buffers, reused every call
     std::vector<float> hidden_;   // [tokens, hidden] for the current call
