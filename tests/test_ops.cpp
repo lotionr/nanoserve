@@ -214,5 +214,57 @@ int main() {
                        "threaded matmul not bit-identical");
     }
 
+    {  // F026: SIMD kernels agree with an independent scalar reference.
+        // ops::dot is NEON on arm64; this reference is the plain loop it
+        // replaced, so the check is meaningful on both architectures (on x86
+        // it simply confirms the fallback path stays correct).
+        const auto scalar_dot = [](const float* a, const float* b, int64_t n) {
+            float acc = 0.0f;
+            for (int64_t i = 0; i < n; ++i) {
+                acc += a[i] * b[i];
+            }
+            return acc;
+        };
+        const auto scalar_rmsnorm = [](const float* xs, const float* wt, float* out,
+                                       int64_t dim, float eps) {
+            double sum_sq = 0.0;
+            for (int64_t i = 0; i < dim; ++i) {
+                sum_sq += static_cast<double>(xs[i]) * static_cast<double>(xs[i]);
+            }
+            const float inv = 1.0f / std::sqrt(static_cast<float>(
+                                                   sum_sq / static_cast<double>(dim)) +
+                                               eps);
+            for (int64_t i = 0; i < dim; ++i) {
+                out[i] = xs[i] * inv * wt[i];
+            }
+        };
+
+        std::mt19937 gen(777);
+        std::normal_distribution<float> dist(0.0f, 1.0f);
+        // Lengths straddling the 16/4-wide unrolls so every tail path runs.
+        for (int64_t n : {1, 3, 4, 7, 15, 16, 17, 63, 64, 65, 896, 4864}) {
+            std::vector<float> a(static_cast<size_t>(n)), b(static_cast<size_t>(n));
+            for (auto* v : {&a, &b}) {
+                for (float& f : *v) {
+                    f = dist(gen);
+                }
+            }
+            const float got = nano::ops::dot(a.data(), b.data(), n);
+            const float want = scalar_dot(a.data(), b.data(), n);
+            // Reduction order differs, so compare relatively, not bitwise.
+            const float bound = 1e-5f * std::max(1.0f, std::fabs(want));
+            NANO_CHECK_MSG(std::fabs(got - want) <= bound,
+                           "dot(n=%lld): SIMD %.9g vs scalar %.9g",
+                           static_cast<long long>(n), static_cast<double>(got),
+                           static_cast<double>(want));
+
+            std::vector<float> simd(static_cast<size_t>(n));
+            std::vector<float> ref(static_cast<size_t>(n));
+            nano::ops::rmsnorm(a.data(), b.data(), simd.data(), 1, n, 1e-6f);
+            scalar_rmsnorm(a.data(), b.data(), ref.data(), n, 1e-6f);
+            check_close(simd, ref, kRtol, kAtol, "rmsnorm simd vs scalar");
+        }
+    }
+
     return nano::testing::finish("test_ops");
 }

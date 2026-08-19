@@ -38,14 +38,20 @@ Current state (kept honest; see `feature_list.json` for the full sequenced list)
 
 - [x] safetensors loader — mmap, header parsing, bounds validation, bf16→fp32
 - [x] Model config parsing (`config.json` → typed struct)
-- [x] Byte-level BPE tokenizer (encode/decode), verified against HF `tokenizers`
-      golden vectors for English text; full Unicode pretokenizer parity is a
-      tracked follow-up
-- [x] `nanoserve` CLI: `inspect` (tensor table for a safetensors file), `tokenize`
-- [ ] fp32 forward pass (RMSNorm / RoPE / GQA attention / SwiGLU)
-- [ ] KV cache + greedy decoding
-- [ ] Sampling (temperature, top-k, top-p)
-- [ ] Threaded + SIMD matmul, int8 quantization
+- [x] Byte-level BPE tokenizer (encode/decode) with full Unicode pretokenizer
+      parity and NFC normalization, verified against HF `tokenizers` golden
+      vectors; Qwen chat-template helper verified against `apply_chat_template`
+- [x] `nanoserve` CLI: `inspect` (tensor table for a safetensors file), `tokenize`,
+      `generate`
+- [x] fp32 forward pass (RMSNorm / RoPE / GQA attention / SwiGLU), verified
+      layer-by-layer and logits-level against HF transformers
+- [x] KV cache + greedy decoding, matching HF greedy continuations token for token
+- [x] Sampling (temperature, top-k, top-p) with a seeded RNG, matching the HF
+      logits warpers; streaming output with UTF-8-safe incremental detokenization
+- [x] Allocation-free decode loop (verified with an allocation counter)
+- [x] Threaded matmul (persistent thread pool) and NEON SIMD kernels with a
+      scalar fallback, both tested for parity against the reference path
+- [ ] int8 weight quantization
 - [ ] Python bindings (`import nanoserve; nanoserve.generate(...)`)
 - [ ] Benchmark harness (Python): tok/s + time-to-first-token vs llama.cpp,
       reproducible script, results table generated into this README

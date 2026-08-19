@@ -18,7 +18,7 @@ target_compile_options(nanoserve_warnings INTERFACE
 )
 
 # --- core library -----------------------------------------------------------
-add_library(nanoserve_core STATIC
+set(NANOSERVE_CORE_SOURCES
     src/core/json.cpp
     src/core/mmap_file.cpp
     src/core/ops.cpp
@@ -31,8 +31,18 @@ add_library(nanoserve_core STATIC
     src/model/tokenizer.cpp
     src/model/unicode.cpp
 )
+
+add_library(nanoserve_core STATIC ${NANOSERVE_CORE_SOURCES})
 target_include_directories(nanoserve_core PUBLIC src)
 target_link_libraries(nanoserve_core PRIVATE nanoserve_warnings)
+
+# Same sources with the SIMD kernels compiled out (F026). Lets this arm64
+# machine build and test the scalar fallback that x86 CI will take, instead
+# of assuming it still works.
+add_library(nanoserve_core_scalar STATIC ${NANOSERVE_CORE_SOURCES})
+target_include_directories(nanoserve_core_scalar PUBLIC src)
+target_compile_definitions(nanoserve_core_scalar PUBLIC NANO_FORCE_SCALAR=1)
+target_link_libraries(nanoserve_core_scalar PRIVATE nanoserve_warnings)
 
 # --- CLI --------------------------------------------------------------------
 add_executable(nanoserve src/server/main.cpp)
@@ -41,6 +51,9 @@ target_link_libraries(nanoserve PRIVATE nanoserve_core nanoserve_warnings)
 # --- microbenchmarks (not tests; see bench/bench_ops.cpp header) -------------
 add_executable(bench_ops bench/bench_ops.cpp)
 target_link_libraries(bench_ops PRIVATE nanoserve_core nanoserve_warnings)
+
+add_executable(bench_ops_scalar bench/bench_ops.cpp)
+target_link_libraries(bench_ops_scalar PRIVATE nanoserve_core_scalar nanoserve_warnings)
 
 # --- tests ------------------------------------------------------------------
 # Plain-executable tests (llama.cpp style): exit 0 = pass, 77 = skipped
@@ -68,4 +81,15 @@ if(NANOSERVE_BUILD_TESTS)
     nanoserve_test(test_sampling)
     nanoserve_test(test_streaming)
     nanoserve_test(test_alloc)
+
+    # The scalar fallback runs the same op goldens (F026): if SIMD and scalar
+    # ever disagree beyond tolerance, one of these two tests fails.
+    add_executable(test_ops_scalar tests/test_ops.cpp)
+    target_link_libraries(test_ops_scalar PRIVATE nanoserve_core_scalar
+                                                  nanoserve_warnings)
+    add_test(NAME test_ops_scalar COMMAND test_ops_scalar)
+    set_tests_properties(test_ops_scalar PROPERTIES
+        SKIP_RETURN_CODE 77
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
 endif()

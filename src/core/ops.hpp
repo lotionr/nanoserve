@@ -22,6 +22,10 @@ namespace nano::ops {
 void set_num_threads(int n);
 int num_threads();
 
+/// Dot product of two contiguous fp32 vectors (NEON-accelerated on arm64,
+/// scalar elsewhere). Exposed because attention scores are dot products too.
+float dot(const float* a, const float* b, int64_t n);
+
 /// y[t, d_out] = x[t, d_in] @ W^T + bias.
 /// W is stored [d_out, d_in] exactly as in the safetensors file (Hugging Face
 /// nn.Linear layout), so each output value is a dot product of an x row with

@@ -22,11 +22,17 @@ struct Shape {
     int64_t tokens, d_in, d_out;
 };
 
-// The projections one decode step actually runs (tokens = 1).
+// Decode shapes (tokens = 1) are GEMV: each weight is read once, so they are
+// memory-bandwidth bound. Prefill shapes (tokens = 41, a real chat prompt)
+// reuse each weight across all rows, making them compute bound — the two
+// regimes scale very differently with threads, which is the point of showing
+// both.
 constexpr Shape kShapes[] = {
-    {"lm_head   [151936 x 896]", 1, 896, 151936},
-    {"mlp gate  [4864 x 896]  ", 1, 896, 4864},
-    {"q_proj    [896 x 896]   ", 1, 896, 896},
+    {"decode  lm_head  [151936]", 1, 896, 151936},
+    {"decode  mlp gate [4864]  ", 1, 896, 4864},
+    {"decode  q_proj   [896]   ", 1, 896, 896},
+    {"prefill mlp gate [4864]  ", 41, 896, 4864},
+    {"prefill q_proj   [896]   ", 41, 896, 896},
 };
 
 /// Median wall time of `reps` calls, in milliseconds.
@@ -50,8 +56,8 @@ int main(int argc, char** argv) {
     std::mt19937 gen(20260818);
     std::normal_distribution<float> dist(0.0f, 1.0f);
 
-    std::printf("%-28s %12s %12s %9s %10s\n", "shape (tokens=1)", "1 thread", "pooled",
-                "speedup", "GB/s");
+    std::printf("%-28s %12s %12s %9s %10s\n", "shape", "1 thread", "pooled", "speedup",
+                "GFLOP/s");
     for (const Shape& s : kShapes) {
         std::vector<float> x(static_cast<size_t>(s.tokens * s.d_in));
         std::vector<float> w(static_cast<size_t>(s.d_out * s.d_in));
@@ -73,10 +79,11 @@ int main(int argc, char** argv) {
         const double pooled_ms = time_linear(x.data(), w.data(), y.data(), s, kReps);
         const int nthreads = nano::ops::num_threads();
 
-        // Weight bytes dominate traffic; x and y are noise at these shapes.
-        const double gb = static_cast<double>(s.d_out * s.d_in) * 4.0 / 1e9;
+        // One multiply-add per (token, d_in, d_out) triple = 2 flops.
+        const double gflop =
+            2.0 * static_cast<double>(s.tokens * s.d_in * s.d_out) / 1e9;
         std::printf("%-28s %9.3f ms %9.3f ms %8.2fx %10.1f\n", s.name, serial_ms,
-                    pooled_ms, serial_ms / pooled_ms, gb / (pooled_ms / 1e3));
+                    pooled_ms, serial_ms / pooled_ms, gflop / (pooled_ms / 1e3));
         (void)nthreads;
     }
     std::printf("pooled = %d threads (median of 20 reps)\n", nano::ops::num_threads());

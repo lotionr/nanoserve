@@ -27,14 +27,6 @@ std::vector<float> load_tensor(const SafeTensors& st, const std::string& name,
     return st.to_f32(info);
 }
 
-float dot(const float* a, const float* b, int64_t n) {
-    float acc = 0.0f;
-    for (int64_t i = 0; i < n; ++i) {
-        acc += a[i] * b[i];
-    }
-    return acc;
-}
-
 }  // namespace
 
 Qwen2Model Qwen2Model::load(const std::string& model_dir) {
@@ -142,7 +134,7 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
 
             for (int64_t s = 0; s < n_ctx; ++s) {
                 scores[static_cast<size_t>(s)] =
-                    dot(q_head, cache.k_row(layer_idx, s) + kv_off, D) * scale;
+                    ops::dot(q_head, cache.k_row(layer_idx, s) + kv_off, D) * scale;
             }
             ops::softmax(scores.data(), n_ctx);
 
