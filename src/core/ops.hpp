@@ -13,6 +13,15 @@
 
 namespace nano::ops {
 
+/// Sets the thread count for the matmul path (F025): 1 = serial, 0 = one per
+/// hardware thread (the default). linear()/matmul() split their output rows
+/// across a persistent pool when the call is large enough to amortize the
+/// wakeup; every element is still computed by exactly one thread with the
+/// serial arithmetic, so results are bit-identical at any thread count.
+/// Not thread-safe itself — call it from the orchestrating thread only.
+void set_num_threads(int n);
+int num_threads();
+
 /// y[t, d_out] = x[t, d_in] @ W^T + bias.
 /// W is stored [d_out, d_in] exactly as in the safetensors file (Hugging Face
 /// nn.Linear layout), so each output value is a dot product of an x row with

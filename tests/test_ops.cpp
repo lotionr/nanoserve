@@ -6,6 +6,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -160,6 +162,56 @@ int main() {
                 check_close(x, want, kRtol, kAtol, what.c_str());
             }
         }
+    }
+
+    {  // F025: threaded linear/matmul are bit-identical to single-threaded.
+        // Shapes above the parallel threshold, with a d_out that doesn't
+        // divide evenly by any thread count, so chunk boundaries are odd.
+        std::mt19937 gen(20260818);
+        std::normal_distribution<float> dist(0.0f, 1.0f);
+        const int64_t tokens = 3, d_in = 896, d_out = 2047;
+        std::vector<float> x(static_cast<size_t>(tokens * d_in));
+        std::vector<float> w(static_cast<size_t>(d_out * d_in));
+        std::vector<float> bias(static_cast<size_t>(d_out));
+        for (auto* v : {&x, &w, &bias}) {
+            for (float& f : *v) {
+                f = dist(gen);
+            }
+        }
+
+        std::vector<float> serial(static_cast<size_t>(tokens * d_out));
+        nano::ops::set_num_threads(1);
+        nano::ops::linear(x.data(), w.data(), bias.data(), serial.data(), tokens, d_in,
+                          d_out);
+
+        for (int threads : {2, 5, 0}) {  // 0 = hardware concurrency
+            std::vector<float> pooled(static_cast<size_t>(tokens * d_out), -1.0f);
+            nano::ops::set_num_threads(threads);
+            nano::ops::linear(x.data(), w.data(), bias.data(), pooled.data(), tokens,
+                              d_in, d_out);
+            NANO_CHECK_MSG(std::memcmp(serial.data(), pooled.data(),
+                                       serial.size() * sizeof(float)) == 0,
+                           "threaded linear (threads=%d) not bit-identical", threads);
+        }
+
+        // matmul splits over rows; 131 rows won't divide evenly either.
+        const int64_t m = 131, k = 64, n = 96;
+        std::vector<float> a(static_cast<size_t>(m * k));
+        std::vector<float> b(static_cast<size_t>(k * n));
+        for (auto* v : {&a, &b}) {
+            for (float& f : *v) {
+                f = dist(gen);
+            }
+        }
+        std::vector<float> c_serial(static_cast<size_t>(m * n));
+        std::vector<float> c_pooled(static_cast<size_t>(m * n), -1.0f);
+        nano::ops::set_num_threads(1);
+        nano::ops::matmul(a.data(), b.data(), c_serial.data(), m, k, n);
+        nano::ops::set_num_threads(0);
+        nano::ops::matmul(a.data(), b.data(), c_pooled.data(), m, k, n);
+        NANO_CHECK_MSG(std::memcmp(c_serial.data(), c_pooled.data(),
+                                   c_serial.size() * sizeof(float)) == 0,
+                       "threaded matmul not bit-identical");
     }
 
     return nano::testing::finish("test_ops");

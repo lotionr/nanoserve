@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/ops.hpp"
 #include "core/safetensors.hpp"
 #include "model/chat_template.hpp"
 #include "model/config.hpp"
@@ -34,7 +35,8 @@ int usage() {
                  "  nanoserve inspect  <file.safetensors>\n"
                  "  nanoserve tokenize <model_dir> <text>\n"
                  "  nanoserve generate <model_dir> -p <prompt> [-n max_tokens] [--greedy]\n"
-                 "                     [--temp T] [--top-k K] [--top-p P] [--seed S] [--stats]\n"
+                 "                     [--temp T] [--top-k K] [--top-p P] [--seed S]\n"
+                 "                     [--threads N] [--stats]\n"
                  "  nanoserve version\n",
                  static_cast<int>(kVersion.size()), kVersion.data());
     return 2;
@@ -112,6 +114,8 @@ int cmd_generate(const std::vector<std::string>& args) {
             sampling.top_p = std::strtof(args[++i].c_str(), nullptr);
         } else if (args[i] == "--seed" && i + 1 < args.size()) {
             sampling.seed = std::strtoull(args[++i].c_str(), nullptr, 10);
+        } else if (args[i] == "--threads" && i + 1 < args.size()) {
+            nano::ops::set_num_threads(std::atoi(args[++i].c_str()));
         } else if (args[i] == "--stats") {
             stats = true;
         } else if (model_dir.empty() && args[i][0] != '-') {

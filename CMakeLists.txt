@@ -23,6 +23,7 @@ add_library(nanoserve_core STATIC
     src/core/mmap_file.cpp
     src/core/ops.cpp
     src/core/safetensors.cpp
+    src/core/threadpool.cpp
     src/model/chat_template.cpp
     src/model/config.cpp
     src/model/qwen2.cpp
@@ -36,6 +37,10 @@ target_link_libraries(nanoserve_core PRIVATE nanoserve_warnings)
 # --- CLI --------------------------------------------------------------------
 add_executable(nanoserve src/server/main.cpp)
 target_link_libraries(nanoserve PRIVATE nanoserve_core nanoserve_warnings)
+
+# --- microbenchmarks (not tests; see bench/bench_ops.cpp header) -------------
+add_executable(bench_ops bench/bench_ops.cpp)
+target_link_libraries(bench_ops PRIVATE nanoserve_core nanoserve_warnings)
 
 # --- tests ------------------------------------------------------------------
 # Plain-executable tests (llama.cpp style): exit 0 = pass, 77 = skipped
