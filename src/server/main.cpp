@@ -40,6 +40,7 @@ int usage() {
                  "                     [--backend cpu|metal]  (default: cpu)\n"
                  "  nanoserve quantize <model_dir> [-o out.safetensors]\n"
                  "  nanoserve serve    <model_dir> [--port P] [--int8] [--threads N]\n"
+                 "                     [--max-batch B]  (default 4: requests decoded together)\n"
                  "  nanoserve version\n",
                  static_cast<int>(kVersion.size()), kVersion.data());
     return 2;

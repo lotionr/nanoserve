@@ -5,8 +5,10 @@
 // Checks: a well-formed non-streaming completion (schema + usage counts
 // against a locally-loaded tokenizer), greedy determinism across requests,
 // SSE streaming whose concatenated chunks equal the non-streamed text and
-// which terminates with finish_reason + [DONE], and the error paths
-// (malformed JSON -> 400, wrong method -> 405, unknown path -> 404).
+// which terminates with finish_reason + [DONE], continuous batching (F036:
+// four concurrent clients, each response equal to its serial golden, wall
+// time beating serial), and the error paths (malformed JSON -> 400, wrong
+// method -> 405, unknown path -> 404).
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -14,11 +16,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/json.hpp"
@@ -274,6 +278,94 @@ int main(int argc, char** argv) {
         NANO_CHECK_MSG(streamed_text == first_text,
                        "streamed \"%s\" != non-streamed \"%s\"", streamed_text.c_str(),
                        first_text.c_str());
+    }
+
+    // ---- E: continuous batching (F036) -------------------------------------
+    // Four genuinely concurrent clients (four threads, four sockets). Each
+    // response must equal the response the same request gets when sent alone
+    // (correctness under concurrency, greedy), and the four together must
+    // finish measurably faster than the four run back to back (throughput).
+    {
+        const std::vector<std::string> prompts = {
+            "The capital of France is",
+            "In C++, a std::vector is",
+            "The theory of relativity says that",
+            "Deep learning is",
+        };
+        const auto request_for = [](const std::string& p) {
+            return post_completions("{\"prompt\":\"" + p +
+                                    "\",\"max_tokens\":24,\"temperature\":0}");
+        };
+        const auto text_of = [](const std::string& response) {
+            const nano::json::Value doc = nano::json::parse(body_of(response));
+            return doc.at("choices").items()[0].at("text").as_string();
+        };
+        const auto now = std::chrono::steady_clock::now;
+        const auto secs = [](auto dt) {
+            return std::chrono::duration<double>(dt).count();
+        };
+
+        // Serial pass: one at a time. These responses are the goldens for the
+        // concurrent pass, and their total time is the serial baseline.
+        std::vector<std::string> serial_text(prompts.size());
+        const auto serial_t0 = now();
+        for (size_t i = 0; i < prompts.size(); ++i) {
+            const std::string response =
+                http_exchange(server.port, request_for(prompts[i]));
+            NANO_CHECK_MSG(status_of(response) == 200, "serial %zu: status %d", i,
+                           status_of(response));
+            serial_text[i] = text_of(response);
+            NANO_CHECK_MSG(!serial_text[i].empty(), "serial %zu: empty text", i);
+        }
+        const double serial_s = secs(now() - serial_t0);
+
+        // Concurrent pass: all four in flight at once.
+        std::vector<std::string> concurrent_response(prompts.size());
+        std::vector<std::thread> clients;
+        const auto concurrent_t0 = now();
+        for (size_t i = 0; i < prompts.size(); ++i) {
+            clients.emplace_back([&, i] {
+                concurrent_response[i] =
+                    http_exchange(server.port, request_for(prompts[i]));
+            });
+        }
+        for (std::thread& t : clients) {
+            t.join();
+        }
+        const double concurrent_s = secs(now() - concurrent_t0);
+
+        int64_t total_tokens = 0;
+        for (size_t i = 0; i < prompts.size(); ++i) {
+            NANO_CHECK_MSG(status_of(concurrent_response[i]) == 200,
+                           "concurrent %zu: status %d", i,
+                           status_of(concurrent_response[i]));
+            const nano::json::Value doc =
+                nano::json::parse(body_of(concurrent_response[i]));
+            const std::string text =
+                doc.at("choices").items()[0].at("text").as_string();
+            // The load-bearing check: a request decoded in a shared batch
+            // returns byte-identical text to the same request served alone.
+            NANO_CHECK_MSG(text == serial_text[i],
+                           "concurrent %zu differs from its serial golden:\n"
+                           "  batched: \"%s\"\n  serial:  \"%s\"",
+                           i, text.c_str(), serial_text[i].c_str());
+            total_tokens += doc.at("usage").at("completion_tokens").as_int();
+        }
+
+        const double serial_tps = static_cast<double>(total_tokens) / serial_s;
+        const double concurrent_tps =
+            static_cast<double>(total_tokens) / concurrent_s;
+        std::printf(
+            "F036: 4 requests, %lld tokens — serial %.2fs (%.1f tok/s), "
+            "concurrent %.2fs (%.1f tok/s), %.2fx\n",
+            static_cast<long long>(total_tokens), serial_s, serial_tps,
+            concurrent_s, concurrent_tps, concurrent_tps / serial_tps);
+        // Loose bound (real speedup is ~2-3x) so background load can't flake
+        // the suite; the printed numbers carry the honest measurement.
+        NANO_CHECK_MSG(concurrent_s < serial_s * 0.85,
+                       "concurrent execution (%.2fs) not faster than serial "
+                       "(%.2fs) — batching isn't batching",
+                       concurrent_s, serial_s);
     }
 
     // ---- D: error paths ----------------------------------------------------

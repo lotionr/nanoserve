@@ -1,8 +1,11 @@
-// Minimal HTTP/1.1 server (F035): POSIX sockets, blocking, one connection at
-// a time, Connection: close on every response. That is not a toy shortcut so
-// much as the honest shape of the current engine — decode is single-sequence,
-// so overlapping requests couldn't share it anyway. Continuous batching
-// (F036) is the feature that changes this, and it will change this file.
+// Minimal HTTP/1.1 server (F035/F036): POSIX sockets, `Connection: close` on
+// every response. The accept loop reads and parses one request at a time,
+// then hands the whole connection — socket and parsed request — to the
+// handler as an owning Connection object. The handler may answer inline and
+// let it die, or move it somewhere longer-lived; that move is what lets the
+// serving layer (serve.cpp) keep many responses in flight at once while this
+// file stays a single-threaded parser. Continuous batching (F036) is built
+// on exactly that handoff.
 //
 // From scratch (no third-party deps) like the JSON/BPE/safetensors code:
 // parsing the protocol the tokens travel over is part of the serving story.
@@ -13,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace nano::http {
 
@@ -55,7 +59,39 @@ private:
     bool headers_sent_ = false;
 };
 
-using Handler = std::function<void(const Request&, ResponseWriter&)>;
+/// One accepted connection: the parsed request plus the socket to answer on.
+/// Owns the socket — whoever holds the Connection holds the duty to answer,
+/// and destroying it closes the connection (which, with Connection: close,
+/// IS the end-of-response signal). Move-only, so that duty can be handed to
+/// a queue (serve.cpp's scheduler) without any shared ownership.
+class Connection {
+public:
+    Connection(int fd, Request req)
+        : fd_(fd), req_(std::move(req)), writer_(fd) {}
+    ~Connection() { close_now(); }
+    Connection(Connection&& other) noexcept
+        : fd_(other.fd_), req_(std::move(other.req_)), writer_(other.fd_) {
+        other.fd_ = -1;
+    }
+    Connection& operator=(Connection&&) = delete;  // members would need re-seating
+    Connection(const Connection&) = delete;
+    Connection& operator=(const Connection&) = delete;
+
+    const Request& request() const { return req_; }
+    ResponseWriter& writer() { return writer_; }
+
+private:
+    void close_now();
+
+    int fd_ = -1;  // -1 after being moved from
+    Request req_;
+    ResponseWriter writer_;
+};
+
+/// Takes ownership of the connection. Must not throw — by the time the
+/// handler runs, only it can still answer the client, so it must turn its
+/// own failures into responses (or drop the connection) itself.
+using Handler = std::function<void(Connection)>;
 
 class Server {
 public:
@@ -69,10 +105,9 @@ public:
 
     uint16_t port() const { return port_; }
 
-    /// Accept loop, forever: parse one request, call `handler`, close. A
-    /// connection-level error (bad request, client hangup mid-write) drops
-    /// that connection and keeps serving; handler exceptions become a 500 if
-    /// the response hasn't started yet.
+    /// Accept loop, forever: parse one request, hand the connection to
+    /// `handler`. A parse error (bad request, client hangup mid-read) is
+    /// answered here and that connection dropped; the loop keeps serving.
     [[noreturn]] void run(const Handler& handler);
 
 private:

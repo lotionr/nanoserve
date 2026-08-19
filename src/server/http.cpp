@@ -194,6 +194,13 @@ Server::~Server() {
     }
 }
 
+void Connection::close_now() {
+    if (fd_ >= 0) {
+        ::close(fd_);
+        fd_ = -1;
+    }
+}
+
 void Server::run(const Handler& handler) {
     // A client that disconnects mid-stream must surface as a write error we
     // can catch, not a process-killing SIGPIPE.
@@ -204,26 +211,22 @@ void Server::run(const Handler& handler) {
         if (fd < 0) {
             continue;  // interrupted accept; nothing to clean up
         }
-        ResponseWriter out(fd);
+        Request req;
         try {
-            const Request req = read_request(fd);
-            handler(req, out);
+            req = read_request(fd);
         } catch (const ParseError& e) {
+            ResponseWriter out(fd);
             try {
                 out.send(e.status, "text/plain", std::string(e.what()) + "\n");
             } catch (...) {
             }
-        } catch (const std::exception& e) {
-            // Handler failed. If the response already started (mid-SSE),
-            // closing the socket is all we can honestly do.
-            if (!out.headers_sent()) {
-                try {
-                    out.send(500, "text/plain", std::string(e.what()) + "\n");
-                } catch (...) {
-                }
-            }
+            ::close(fd);
+            continue;
         }
-        ::close(fd);
+        // From here the Connection owns the fd; the handler owns the reply
+        // (it may answer now or move the connection into a queue). Handlers
+        // must not throw (http.hpp), so nothing is caught here.
+        handler(Connection(fd, std::move(req)));
     }
 }
 
