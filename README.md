@@ -51,9 +51,12 @@ Current state (kept honest; see `feature_list.json` for the full sequenced list)
 - [x] Allocation-free decode loop (verified with an allocation counter)
 - [x] Threaded matmul (persistent thread pool) and NEON SIMD kernels with a
       scalar fallback, both tested for parity against the reference path
-- [x] int8 weight quantization (per-row scales, offline `nanoserve quantize` pass,
-      NEON int8 kernel); quality checked against the fp32 goldens — greedy
-      continuations unchanged on all golden prompts
+- [x] int8 weight quantization (per-row scales, offline `nanoserve quantize` pass)
+      with an integer NEON sdot kernel: activations quantized per 32-value block
+      at runtime, dot products in int8 x int8 -> int32 (llama.cpp Q8_0 style);
+      quality gated against the fp32 goldens — top-1 logits unchanged, greedy
+      continuations identical on 3 of 4 golden prompts, the one divergence
+      verified to sit on a 0.03-logit-margin near-tie (test enforces this)
 - [x] Python bindings (pybind11 + scikit-build-core): `nanoserve.Engine(...)`
       with `generate()` and streaming, verified to match the CLI token for token
 - [x] Benchmark harness (Python): tok/s + time-to-first-token vs llama.cpp,
@@ -73,15 +76,15 @@ Hardware: Apple M3 Pro (5P + 6E cores, 18 GB), macOS 15.5.
 
 | engine | precision | threads | prefill tok/s | decode tok/s | TTFT ms |
 |---|---|---:|---:|---:|---:|
-| nanoserve (`a385aa4`) | fp32 | 5 | 140.8 ± 4.3 | 51.3 ± 1.0 | 291 |
-| llama.cpp (`5112b97`) | f32 | 5 | 552.0 ± 14.8 | 55.4 ± 3.0 | 74 |
-| nanoserve (`a385aa4`) | int8 | 5 | 184.9 ± 1.8 | 106.2 ± 0.7 | 222 |
-| llama.cpp (`5112b97`) | q8_0 | 5 | 1513.6 ± 16.0 | 197.8 ± 1.2 | 27 |
+| nanoserve (`eca33ea`) | fp32 | 5 | 142.3 ± 4.2 | 49.2 ± 4.2 | 288 |
+| llama.cpp (`5112b97`) | f32 | 5 | 560.3 ± 2.5 | 55.4 ± 2.5 | 73 |
+| nanoserve (`eca33ea`) | int8 | 5 | 545.8 ± 1.5 | 145.6 ± 4.4 | 75 |
+| llama.cpp (`5112b97`) | q8_0 | 5 | 1428.1 ± 33.5 | 195.6 ± 7.3 | 29 |
 
-- **fp32 vs f32 decode:** llama.cpp is **1.08x faster** (55.4 vs 51.3 tok/s).
-- **int8 vs Q8_0 decode:** llama.cpp is **1.86x faster** (197.8 vs 106.2 tok/s).
+- **fp32 vs f32 decode:** llama.cpp is **1.13x faster** (55.4 vs 49.2 tok/s).
+- **int8 vs Q8_0 decode:** llama.cpp is **1.34x faster** (195.6 vs 145.6 tok/s).
 
-Caveats, stated plainly: the f32 GGUF is converted from the exact safetensors file nanoserve loads, so the fp32 row is like-for-like; the int8 formats are NOT identical (nanoserve: per-row scales, 8.0 bits/weight; llama.cpp Q8_0: per-32-block scales, 8.5 bits/weight — finer-grained and slightly larger). nanoserve numbers come from the engine's internal prefill/decode timers on a real prompt; llama.cpp numbers come from `llama-bench` with the same token counts, threads, and repeat count (its decode test starts from an empty context — at 0.5B the KV-read difference is ~3 MB/token vs ~0.5-2 GB/token of weights, i.e. under the noise floor). The thread count was chosen by measuring both engines at 5 (performance cores) and 11 (all hardware threads): decode is fastest at 5 for BOTH engines on this chip (the sweep files sit in bench/results/). llama.cpp is its default macOS CPU build, which uses Accelerate BLAS for prompt processing — much of its prefill lead is Apple's GEMM, not ggml kernels.
+Caveats, stated plainly: the f32 GGUF is converted from the exact safetensors file nanoserve loads, so the fp32 row is like-for-like; the int8 WEIGHT formats are NOT identical (nanoserve: per-row scales, 8.0 bits/weight; llama.cpp Q8_0: per-32-block scales, 8.5 bits/weight — finer-grained and slightly larger). Both engines quantize activations to int8 per 32-value block at runtime and compute the dot products with integer SIMD (sdot). nanoserve numbers come from the engine's internal prefill/decode timers on a real prompt; llama.cpp numbers come from `llama-bench` with the same token counts, threads, and repeat count (its decode test starts from an empty context — at 0.5B the KV-read difference is ~3 MB/token vs ~0.5-2 GB/token of weights, i.e. under the noise floor). The thread count was chosen by measuring both engines at 5 (performance cores) and 11 (all hardware threads): decode is fastest at 5 for BOTH engines on this chip (the sweep files sit in bench/results/). llama.cpp is its default macOS CPU build, which uses Accelerate BLAS for prompt processing — much of its prefill lead is Apple's GEMM, not ggml kernels.
 
 Reproduce:
 
