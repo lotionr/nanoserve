@@ -376,7 +376,7 @@
         "Run generate with --backend metal and verify identical greedy output on golden prompts",
         "Benchmark CPU vs Metal with bench/run.py and record both"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F034",

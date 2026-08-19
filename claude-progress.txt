@@ -1,4 +1,70 @@
 ---
+Session: 2026-08-19 (Session 6 — Metal backend, F033)
+Completed: F033 (32/36 features passing; 14/14 ctest green + 6/6 pytest)
+Notes:
+  - THE HEADLINE (a negative result, published as such): at 0.5B the GPU
+    LOSES decode — fp32 metal 30.9 +/- 0.9 tok/s vs 50.8 +/- 3.2 CPU
+    (1.64x slower), int8 metal 38.2 +/- 0.2 vs 147.0 +/- 0.4 (3.85x
+    slower). Cause is architectural, not a kernel bug: only the linears
+    are offloaded and the CPU consumes each result immediately (RoPE,
+    attention, silu), so every projection is a synchronous encode/commit/
+    wait round-trip — ~121 per decode token (5 GEMVs x 24 layers +
+    lm_head; k/v sit below the dispatch floor). int8-metal decode at
+    26.2 ms/token vs fp32-metal 32.4 ms is a consistency check: the
+    6.2 ms delta ~= the ~1.4 GB/token weight-traffic difference. CPU
+    stays the default; --backend metal is opt-in. Prefill: fp32 metal at
+    parity with fp32 CPU (144.2 vs 144.5 tok/s), int8 metal 3.6x SLOWER
+    than the sdot CPU prefill — the naive simdgroup-per-column kernel
+    (even with 8-token tiling) is nowhere near Accelerate-class GEMM.
+    Beating 0.5B CPU decode on GPU would need fused/graph dispatch
+    (megakernels or at least whole-layer command buffers), i.e.
+    restructuring the engine — out of F033's scope, noted honestly.
+  - WHAT LANDED: src/core/metal.{hpp,mm} (ObjC++, runtime-compiled MSL
+    embedded as a string; stub .cpp elsewhere so x86 CI links). Kernels:
+    one simdgroup per output column, lanes stride d_in (coalesced), 8-token
+    tiles so a weight row is read once per tile; linear_q8 variant
+    dequantizes int8 weights in-register against FP32 activations
+    (activation quantization is a CPU-sdot trick; on GPU the win is weight
+    bytes, so skipping it is free accuracy). ops::set_backend(cpu|metal)
+    routes linear/linear_q8 above kMetalMinMacs (= 2^19, same floor as the
+    thread pool; k/v GEMVs stay CPU). Weight residency: Engine ctor
+    registers every weight buffer iff metal is selected — page-aligned
+    large allocations get ZERO-COPY newBufferWithBytesNoCopy wraps
+    (unified memory; no second copy of the model), small buffers are
+    copied once; dtor unregisters before free, unregistered pointers work
+    via per-call staging (what the parity test uses). CLI --backend,
+    Python set_backend()/metal_available(), bench rows carry a backend
+    field (report.py keys on engine/precision/backend, old files default
+    cpu).
+  - ACCURACY: test_metal (skips 77 without a GPU): fp32 parity worst
+    2.9e-5 combined abs/rel across GEMV/GEMM/ragged/sub-simdgroup shapes
+    (bound 1e-3); q8-vs-dequantized-reference worst 7.2e-6; routing floor
+    checks bit-exact both sides. On the real model: fp32-metal logits
+    within 2.2e-5 of CPU, greedy IDENTICAL to HF goldens 4/4; int8-metal
+    greedy BIT-IDENTICAL to the fp32 goldens 4/4 — strictly better than
+    the CPU sdot path (haiku near-tie flip at step 18 doesn't happen
+    without activation quantization), guarded by test_quant's margin frame
+    if it ever diverges. CLI cross-check: cpu vs metal ids identical
+    (fp32 haiku 21 tokens, int8 KV prompt 32 tokens).
+  - Bench protocol: 2 full runs (first had int8-cpu prefill flagged
+    HIGH-VARIANCE 502.8 +/- 95.4 from session background load; idle re-run
+    546.5 +/- 2.2 matches session 5's 545.8 — both files kept, newest
+    wins). Metal rows reproduced across both runs (30.9/31.6, 38.2/38.6).
+    Numbers recorded at clean commit cea0581.
+  - GOTCHAS for future GPU work: ARC needs `id<MTLBuffer> __strong&` for
+    reference params; pointer-keyed residency is only safe because
+    register/unregister bracket the vectors' lifetime (Engine ctor/dtor) —
+    NEVER auto-register inside the linear call (freed+reused addresses
+    would serve stale weights silently). ctest 20.4 -> 33.8s (test_metal
+    loads fp32+int8 engines and re-runs goldens under 2 backends).
+Next: remaining CPU perf threads: prefill GEMM blocking (llama.cpp f32
+  prefill lead is 3.9x, mostly Accelerate BLAS) and 4-row-blocked q8 GEMV
+  (last 1.33x decode gap). Or F034 paged KV cache (next unfinished feature
+  in list order). F004 (CI) still waits on the user creating the GitHub
+  remote. If GPU decode is ever revisited: batch whole layers into one
+  command buffer first, measure dispatch overhead directly with a
+  timestamp-sampled empty kernel.
+---
 Session: 2026-08-19 (Session 5 — integer sdot int8 kernel)
 Completed: no feature-list flips (perf work inside F027's scope); still 31/36,
   13/13 ctest green + 6/6 pytest
