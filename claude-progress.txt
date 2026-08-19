@@ -1,4 +1,103 @@
 ---
+Session: 2026-08-19 (Session 7 — paged KV cache F034, HTTP serving F035)
+Completed: F034 + F035 (34/36 features passing; 16/16 ctest green + 6/6 pytest)
+Notes:
+  - F034 PAGED KV CACHE (src/model/paged_kv.{hpp,cpp}): the vLLM
+    PagedAttention memory model on the CPU — 16-token pages (vLLM's
+    default block_size), PagePool owning physical pages + a LIFO free
+    list SHARED across sequences, PagedKvCache = one sequence's block
+    table (logical block idx -> page id). One page = one heap buffer
+    holding all 24 layers' K+V rows for its 16 positions (stable
+    pointers; block id shared across layers, same as vLLM). The header
+    comment of paged_kv.hpp is a deliberate design note mapping every
+    piece onto vLLM vocabulary name-for-name AND listing what was
+    deliberately simplified away (no prefix sharing/CoW/refcounts, no
+    eviction policy, no preemption/swap, eager backing) — written to be
+    quotable in kvcached conversations.
+  - Dispatch design: layer_forward is now template<class Cache> with
+    explicit instantiations for KvCache and PagedKvCache in qwen2.cpp —
+    NOT virtual, because k_row/v_row sit in the attention inner loop.
+    Engine::forward does one if/else per call into a templated
+    forward_with; Engine holds unique_ptrs (exactly one layout live) and
+    grew a KvLayout ctor param (default contiguous — no caller broke).
+    cache.prepare(pos0, tokens) is the only new hook (no-op contiguous,
+    page allocation paged); Engine::reset() releases pages to the pool.
+  - F034 VERIFICATION (test_kvcache parts C/D/E): paged logits
+    BIT-IDENTICAL to contiguous at prefill + all 40 greedy steps
+    (crossing >= 2 page boundaries; paging relocates rows, never changes
+    values or combine order, so exactness is the design's proof, same
+    argument as F020 cached-vs-recompute). Memory: 81-token generation
+    @ max_seq 2048 = 2.25 MiB paged high-water vs 48.0 MiB contiguous
+    preallocation (21x, test prints both). Perf: 21.76 ms/token
+    contiguous vs 21.88 paged = 0.6% decode overhead on this run (the
+    block-table div/mod indirection; loose test bound, real number in
+    the print).
+  - THE CHURN TEST (test_paged_alloc, model-free so CI always runs it):
+    written against the exact failure shape of kvcached #437 — an
+    allocator handing out page ids beyond backed capacity. alloc()
+    backs memory BEFORE returning an id, so the state is unrepresentable
+    here by construction, and the test asserts the invariant on every
+    alloc anyway: 2000 random grow/reset steps across 3 sequences
+    sharing a 6-page pool (3 full sequences would need 12 — permanent
+    pressure), 329 pool exhaustions recovered by evict-and-continue,
+    pattern re-verification of EVERY live row after EVERY step (catches
+    aliasing/stale block tables/double allocation), pool accounting
+    (live == sum of pages_held) checked each step, LIFO reuse and
+    zero pool growth after free/realloc asserted. 9637 checks.
+  - F035 HTTP SERVING (src/server/http.* + serve.*): `nanoserve serve
+    <model_dir> [--port P] [--int8] [--threads N]`. HTTP/1.1 on raw
+    POSIX sockets, blocking, one connection at a time, Connection:
+    close everywhere — documented as the honest shape of a
+    single-sequence engine, not a shortcut (F036 is what changes it).
+    POST /v1/completions, classic OpenAI schema subset: prompt (RAW
+    completion, no chat template — that's the endpoint's contract; the
+    CLI stays the chat interface), max_tokens, temperature/top_k/top_p/
+    seed, n=1 only, stream. Non-stream: text_completion object w/ one
+    choice, finish_reason stop|length, usage counts (completion_tokens
+    counts the sampled stop token, text never includes it). Stream: SSE,
+    one chunk per StreamDecoder piece (UTF-8-safe) emitted pre-next-
+    forward, then an empty finish_reason chunk, then [DONE]. Errors are
+    OpenAI-shaped {"error":{...}}: 400 bad JSON/params, 404, 405, 413,
+    431. Server engine runs KvLayout::paged. json::quote() added to
+    core/json for serialization (control-char + UTF-8 tested, parse-
+    inverted in test_json).
+  - F035 VERIFICATION: test_server (ctest) forks/execs the REAL binary
+    ($<TARGET_FILE:nanoserve> passed as argv[1]) with --port 0, parses
+    the "listening on http://127.0.0.1:<port>" readiness line (printed
+    only after model load), and talks to it through raw client sockets:
+    41 checks — schema, usage.prompt_tokens equal to a locally loaded
+    tokenizer's count, greedy determinism across two requests, SSE
+    chunks reassembling byte-identically to the non-streamed text with
+    finish_reason only on the final empty chunk, and the 400/405/404
+    paths. Manual curl on port 8080 verified both modes by hand
+    ("The capital of France is" -> " Paris. It is the largest city in").
+  - GOTCHA: an early test_json edit left literal 0x01/0x1f control
+    bytes inside a C++ raw string (invisible in the terminal, wrong
+    expectation); rewrote the check with explicit escapes. If a raw
+    string check ever looks "obviously right" but fails, hexdump it.
+  - ctest 33.8s -> 42.0s (test_kvcache now loads a second, paged engine
+    and re-times decode; test_server loads one more).
+Next: F036 continuous batching, the last real feature (F004 CI still
+  waits on the user creating the GitHub remote). Sketch from this
+  session's vantage point: (1) engine side — a batched decode step
+  needs per-row (cache, pos) instead of one sequence's (pos0+t): stack
+  each live sequence's current token into [n_seqs, hidden] so the qkv/
+  o/mlp linears batch through the existing GEMM path (that's where the
+  throughput comes from), keep rope+attention per row against that
+  row's own PagedKvCache — PagePool was built shared for exactly this;
+  (2) server side — request queue + one worker thread owning the
+  engine; admit new requests between decode steps (prefill can stay
+  whole-prompt, one sequence at a time, to keep step latency bounded);
+  per-request Sampler and StreamDecoder already have no shared state;
+  (3) verification per feature list — 4 concurrent requests all
+  correct, combined throughput > serial (print both), single-request
+  latency regression < 20%. Watch decode determinism: batched GEMM row
+  results must be identical to the 1-row GEMV path or greedy outputs
+  shift — test_ops already covers linear tokens>1 vs tokens=1 parity,
+  lean on it. Also consider capping n_seqs by PagePool max_pages and
+  returning 429 or queueing when full — the pool exhaustion path is
+  already loud and tested.
+---
 Session: 2026-08-19 (Session 6 — Metal backend, F033)
 Completed: F033 (32/36 features passing; 14/14 ctest green + 6/6 pytest)
 Notes:
