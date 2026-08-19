@@ -1,6 +1,6 @@
 ---
 Session: 2026-08-18 (Session 2 — Forward pass)
-Completed: F013-F021 (18/36 features passing; 8/8 ctest green)
+Completed: F013-F021 (20/36 features passing; 8/8 ctest green)
 Notes:
   - Venv gained torch 2.13 + transformers 5.15 (needed for HF-reference
     goldens; transformers 5.x note: rope params live in cfg.rope_parameters,
