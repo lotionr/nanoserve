@@ -416,6 +416,74 @@ def gen_generate_golden(model=None) -> None:
     print(f"wrote {path} ({len(cases)} prompts)")
 
 
+# Sampling parameter sets for F022. Values are chosen so no top-k/top-p cut
+# falls on a tie or an exact cumulative-probability boundary — there the HF
+# reference's behavior depends on torch's unstable sort / 1-ulp rounding, so a
+# golden would be testing noise. Boundary semantics get their own hand-built
+# checks in test_sampling.cpp instead.
+SAMPLING_CASES = [
+    {"name": "temperature only, softening", "vocab": 32, "temperature": 0.7, "top_k": 0, "top_p": 1.0},
+    {"name": "temperature only, sharpening", "vocab": 32, "temperature": 1.5, "top_k": 0, "top_p": 1.0},
+    {"name": "top-k 5", "vocab": 32, "temperature": 1.0, "top_k": 5, "top_p": 1.0},
+    {"name": "top-k 1 is greedy", "vocab": 32, "temperature": 1.0, "top_k": 1, "top_p": 1.0},
+    {"name": "top-k larger than vocab", "vocab": 16, "temperature": 1.0, "top_k": 100, "top_p": 1.0},
+    {"name": "top-p 0.9", "vocab": 32, "temperature": 1.0, "top_k": 0, "top_p": 0.9},
+    {"name": "top-p 0.3 peaked", "vocab": 32, "temperature": 1.0, "top_k": 0, "top_p": 0.3},
+    {"name": "all three combined", "vocab": 64, "temperature": 0.8, "top_k": 10, "top_p": 0.95},
+    {"name": "combined, wide spread", "vocab": 64, "temperature": 1.2, "top_k": 20, "top_p": 0.85},
+]
+
+
+def gen_sampling_golden() -> None:
+    """F022: post-warp sampling distributions from the HF logits warpers.
+
+    For each case: random fp32 logits -> temperature / top-k / top-p warpers
+    in the exact order HF generate() applies them -> softmax. The C++ sampler
+    must reproduce the resulting distribution (the filtered set exactly, the
+    probabilities to fp32 tolerance).
+    """
+    import torch
+    from transformers.generation.logits_process import (
+        LogitsProcessorList,
+        TemperatureLogitsWarper,
+        TopKLogitsWarper,
+        TopPLogitsWarper,
+    )
+
+    rng = np.random.default_rng(20260818)
+    cases = []
+    for case in SAMPLING_CASES:
+        logits = np.asarray(rng.standard_normal(case["vocab"]) * 2.0, dtype=np.float32)
+        warpers = LogitsProcessorList()
+        if case["temperature"] != 1.0:
+            warpers.append(TemperatureLogitsWarper(case["temperature"]))
+        if case["top_k"] > 0:
+            warpers.append(TopKLogitsWarper(top_k=case["top_k"]))
+        if case["top_p"] < 1.0:
+            warpers.append(TopPLogitsWarper(top_p=case["top_p"]))
+        t = torch.from_numpy(logits).unsqueeze(0)
+        warped = warpers(torch.zeros((1, 1), dtype=torch.long), t.clone())
+        probs = torch.softmax(warped, dim=-1)[0].numpy()
+        cases.append(
+            {
+                "name": case["name"],
+                "temperature": case["temperature"],
+                "top_k": case["top_k"],
+                "top_p": case["top_p"],
+                "logits": _floats(logits),
+                "probs": _floats(probs),
+                "kept": int((probs > 0).sum()),
+            }
+        )
+    out = {
+        "source": "transformers Temperature/TopK/TopP logits warpers + softmax",
+        "cases": cases,
+    }
+    path = DATA_DIR / "sampling_golden.json"
+    path.write_text(json.dumps(out))
+    print(f"wrote {path} ({len(cases)} cases)")
+
+
 def gen_embed_golden() -> None:
     """First N bf16 values of model.embed_tokens.weight, widened to fp32.
 

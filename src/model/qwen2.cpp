@@ -8,6 +8,7 @@
 
 #include "core/ops.hpp"
 #include "core/safetensors.hpp"
+#include "model/sampler.hpp"
 
 namespace nano {
 
@@ -208,11 +209,10 @@ int32_t argmax(std::span<const float> logits) {
     return static_cast<int32_t>(best);
 }
 
-std::vector<int32_t> greedy_generate(Engine& engine,
-                                     std::span<const int32_t> prompt_ids,
-                                     int64_t max_new_tokens,
-                                     std::span<const int32_t> stop_ids,
-                                     GenerateStats* stats) {
+std::vector<int32_t> generate(Engine& engine, std::span<const int32_t> prompt_ids,
+                              int64_t max_new_tokens,
+                              std::span<const int32_t> stop_ids, Sampler& sampler,
+                              GenerateStats* stats, const TokenCallback& on_token) {
     const auto now = std::chrono::steady_clock::now;
     const auto to_ms = [](auto d) {
         return std::chrono::duration<double, std::milli>(d).count();
@@ -222,7 +222,7 @@ std::vector<int32_t> greedy_generate(Engine& engine,
     auto t0 = now();
     std::span<const float> logits = engine.forward(prompt_ids);
     for (int64_t i = 0; i < max_new_tokens; ++i) {
-        const int32_t next = argmax(logits);
+        const int32_t next = sampler.sample(logits);
         if (stats) {
             // First token closes the prefill phase; the rest are decode steps.
             const double ms = to_ms(now() - t0);
@@ -233,6 +233,9 @@ std::vector<int32_t> greedy_generate(Engine& engine,
             }
         }
         out.push_back(next);
+        if (on_token) {
+            on_token(next);
+        }
         bool stop = false;
         for (int32_t s : stop_ids) {
             stop = stop || next == s;
@@ -245,6 +248,16 @@ std::vector<int32_t> greedy_generate(Engine& engine,
         logits = engine.forward(fed);
     }
     return out;
+}
+
+std::vector<int32_t> greedy_generate(Engine& engine,
+                                     std::span<const int32_t> prompt_ids,
+                                     int64_t max_new_tokens,
+                                     std::span<const int32_t> stop_ids,
+                                     GenerateStats* stats) {
+    Sampler greedy({.temperature = 0.0f, .top_k = 0, .top_p = 1.0f, .seed = 0},
+                   engine.model().config.vocab_size);
+    return generate(engine, prompt_ids, max_new_tokens, stop_ids, greedy, stats);
 }
 
 }  // namespace nano

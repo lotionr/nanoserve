@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <vector>
@@ -118,11 +119,27 @@ struct GenerateStats {
     std::vector<double> step_ms;   // each subsequent decode step
 };
 
-/// Greedy decoding: prefill `prompt_ids`, then repeatedly append the argmax
-/// token, up to `max_new_tokens`. A generated stop id (eos) IS included in
-/// the returned tokens and ends the loop — the same contract as HF
-/// `generate()`, so outputs compare 1:1 against the golden.
+class Sampler;  // model/sampler.hpp
+
+/// Called once per generated token, in generation order, as soon as the
+/// token is picked — before the next forward pass runs. This is what makes
+/// streaming output possible: the caller sees token i while token i+1 is
+/// still being computed.
+using TokenCallback = std::function<void(int32_t token)>;
+
+/// Decoding loop: prefill `prompt_ids`, then repeatedly append the token the
+/// sampler picks, up to `max_new_tokens`. A generated stop id (eos) IS
+/// included in the returned tokens (and reported to `on_token`) and ends the
+/// loop — the same contract as HF `generate()`, so outputs compare 1:1
+/// against the goldens.
 /// If `stats` is non-null it is filled with prefill/decode timings.
+std::vector<int32_t> generate(Engine& engine, std::span<const int32_t> prompt_ids,
+                              int64_t max_new_tokens,
+                              std::span<const int32_t> stop_ids, Sampler& sampler,
+                              GenerateStats* stats = nullptr,
+                              const TokenCallback& on_token = nullptr);
+
+/// generate() with a temperature-0 sampler — pure argmax decoding.
 std::vector<int32_t> greedy_generate(Engine& engine,
                                      std::span<const int32_t> prompt_ids,
                                      int64_t max_new_tokens,

@@ -26,6 +26,7 @@ add_library(nanoserve_core STATIC
     src/model/chat_template.cpp
     src/model/config.cpp
     src/model/qwen2.cpp
+    src/model/sampler.cpp
     src/model/tokenizer.cpp
     src/model/unicode.cpp
 )
@@ -59,4 +60,5 @@ if(NANOSERVE_BUILD_TESTS)
     nanoserve_test(test_forward)
     nanoserve_test(test_generate)
     nanoserve_test(test_kvcache)
+    nanoserve_test(test_sampling)
 endif()
