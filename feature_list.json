@@ -1,0 +1,416 @@
+{
+  "project": "nanoserve",
+  "description": "From-scratch LLM inference engine: C++20 core (no deps), Python bindings + benchmark harness. Model: Qwen2.5-0.5B-Instruct (Apache-2.0, ungated). Features are sequenced; dependencies flow forward.",
+  "features": [
+    {
+      "id": "F001",
+      "category": "setup",
+      "description": "Project builds clean with warnings-as-errors on Apple clang (C++20, -Wall -Wextra -Wpedantic -Werror) and ctest runs",
+      "steps": [
+        "Run `cmake -B build -DCMAKE_BUILD_TYPE=Release`",
+        "Run `cmake --build build -j` and verify zero warnings/errors",
+        "Run `ctest --test-dir build --output-on-failure` and verify it executes"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F002",
+      "category": "setup",
+      "description": "init.sh verifies toolchain, builds, and runs ctest green end-to-end",
+      "steps": [
+        "Run `bash init.sh` from the repo root",
+        "Verify it checks cmake + compiler versions",
+        "Verify it configures, builds, and runs ctest",
+        "Verify it reports model presence/absence and exits 0 on a healthy tree"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F003",
+      "category": "setup",
+      "description": "Model download script fetches Qwen2.5-0.5B-Instruct (ungated, Apache-2.0) into git-ignored models/",
+      "steps": [
+        "Run `scripts/download_model.sh` on a clean tree",
+        "Verify config.json, tokenizer files, and model.safetensors (~1GB) land in models/qwen2.5-0.5b-instruct/",
+        "Verify re-running skips already-downloaded files",
+        "Verify `git status` shows nothing from models/"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F004",
+      "category": "setup",
+      "description": "GitHub Actions CI (ubuntu + macos) builds and runs ctest; model-dependent tests skip cleanly without weights",
+      "steps": [
+        "Push repo to GitHub (user action) with .github/workflows/ci.yml present",
+        "Verify both ubuntu-latest and macos-latest jobs go green",
+        "Verify model-dependent tests report SKIPPED, not FAILED, in CI logs"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F005",
+      "category": "weights",
+      "description": "Minimal JSON parser (no deps) handles safetensors headers, config.json, and vocab.json including \\uXXXX escapes",
+      "steps": [
+        "Run test_json via ctest",
+        "Verify parsing of objects, arrays, strings, ints, floats, bools, null",
+        "Verify unicode escape decoding (incl. surrogate pairs) to UTF-8",
+        "Verify malformed input is rejected with a clear error, not a crash"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F006",
+      "category": "weights",
+      "description": "safetensors loader: mmap the file, parse header, expose tensors by name with dtype/shape, validate all offsets in bounds",
+      "steps": [
+        "Run test_safetensors via ctest with real downloaded weights",
+        "Verify tensor count and total parameter count match Qwen2.5-0.5B (~494M params)",
+        "Verify model.embed_tokens.weight has shape [151936, 896] and dtype BF16",
+        "Verify a corrupted/truncated header is rejected with a clear error"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F007",
+      "category": "weights",
+      "description": "bf16 -> fp32 conversion is bit-exact vs a numpy golden vector from the real weights",
+      "steps": [
+        "Regenerate tests/data/embed_golden.json with scripts/gen_golden.py",
+        "Run test_safetensors via ctest",
+        "Verify the first N converted values of model.embed_tokens.weight match the golden values exactly"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F008",
+      "category": "weights",
+      "description": "config.json parses into a typed ModelConfig (hidden size, layers, heads, kv heads, rope theta, norm eps, vocab size)",
+      "steps": [
+        "Run test_config via ctest with the real config.json",
+        "Verify hidden_size=896, layers=24, heads=14, kv_heads=2, vocab=151936 for Qwen2.5-0.5B",
+        "Verify missing required fields produce a clear error"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F009",
+      "category": "weights",
+      "description": "CLI `nanoserve inspect <file.safetensors>` prints a tensor table (name, dtype, shape) plus parameter/byte totals",
+      "steps": [
+        "Run `./build/nanoserve inspect models/qwen2.5-0.5b-instruct/model.safetensors`",
+        "Verify a readable table is printed with all tensors",
+        "Verify totals line reports parameter count and file size",
+        "Verify a helpful error (not a crash) on a nonexistent or invalid file"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F010",
+      "category": "tokenizer",
+      "description": "Byte-level BPE tokenizer loads vocab.json + merges.txt (GPT-2 style byte-to-unicode mapping, ranked merges)",
+      "steps": [
+        "Run test_tokenizer via ctest with real tokenizer files",
+        "Verify vocab size is 151643 base entries (Qwen2.5) and merges load without error"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F011",
+      "category": "tokenizer",
+      "description": "encode() matches HF tokenizers exactly on an English/ASCII golden corpus (20+ prompts incl. punctuation, numbers, whitespace, newlines)",
+      "steps": [
+        "Regenerate tests/data/tokenizer_golden.json with scripts/gen_golden.py (uses the real tokenizer.json via the tokenizers library)",
+        "Run test_tokenizer via ctest",
+        "Verify every prompt's token ids match the golden ids exactly"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F012",
+      "category": "tokenizer",
+      "description": "decode() inverts encode(): roundtrip is byte-identical for the whole golden corpus",
+      "steps": [
+        "Run test_tokenizer via ctest",
+        "Verify decode(encode(s)) == s for every corpus prompt",
+        "Verify decoding golden ids reproduces the original prompt text"
+      ],
+      "passes": true
+    },
+    {
+      "id": "F013",
+      "category": "tokenizer",
+      "description": "Special tokens (<|im_start|>, <|im_end|>, <|endoftext|>) are recognized atomically and a Qwen chat-template helper builds correct prompt ids",
+      "steps": [
+        "Add chat-template cases to gen_golden.py (apply_chat_template reference ids)",
+        "Run test_tokenizer via ctest",
+        "Verify special tokens encode to their single reserved ids, never split into bytes",
+        "Verify the chat-template helper's ids match the HF reference ids"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F014",
+      "category": "tokenizer",
+      "description": "Full Unicode pretokenizer parity: encode matches HF on CJK, accented text, and emoji corpus",
+      "steps": [
+        "Extend the golden corpus with non-ASCII prompts (CJK, Cyrillic, emoji, mixed)",
+        "Run test_tokenizer via ctest",
+        "Verify exact id match on every non-ASCII prompt"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F015",
+      "category": "forward",
+      "description": "Core fp32 ops with unit tests vs numpy goldens: matmul (row-major GEMV/GEMM), rmsnorm, softmax, silu, elementwise add/mul",
+      "steps": [
+        "Add op golden cases to scripts/gen_golden.py",
+        "Run test_ops via ctest",
+        "Verify each op matches numpy within 1e-5 relative tolerance on random inputs of representative shapes"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F016",
+      "category": "forward",
+      "description": "RoPE (rotary position embeddings, Qwen2 half-rotation layout, theta=1e6) matches a HF reference implementation",
+      "steps": [
+        "Generate RoPE golden vectors from the HF Qwen2 implementation",
+        "Run test_ops via ctest",
+        "Verify rotated q/k match within 1e-5 for several positions and head dims"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F017",
+      "category": "forward",
+      "description": "Single transformer layer forward (attention with GQA + MLP) matches HF layer output for a real input",
+      "steps": [
+        "Generate a golden: hidden states in/out of layer 0 from HF transformers for a fixed prompt",
+        "Run test_forward via ctest",
+        "Verify layer output matches within 1e-4 relative tolerance"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F018",
+      "category": "forward",
+      "description": "Full fp32 forward pass: prompt -> logits matches HF within tolerance; argmax token identical",
+      "steps": [
+        "Generate golden logits (final position) from HF transformers for 3 fixed prompts",
+        "Run test_forward via ctest",
+        "Verify top-1 token id matches exactly and logits match within 1e-3 relative tolerance"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F019",
+      "category": "decode",
+      "description": "Greedy decoding end-to-end: `nanoserve generate` produces the same continuation as HF greedy for fixed prompts (32+ tokens)",
+      "steps": [
+        "Generate HF greedy continuations for 3 chat prompts via gen_golden.py",
+        "Run `./build/nanoserve generate models/qwen2.5-0.5b-instruct -p <prompt> -n 32 --greedy`",
+        "Verify the generated token ids match the HF reference exactly",
+        "Run test_generate via ctest covering the same check"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F020",
+      "category": "decode",
+      "description": "KV cache: incremental decode produces identical logits to full-recompute decode, and is measurably faster per token",
+      "steps": [
+        "Run test_kvcache via ctest",
+        "Verify per-step logits with cache == logits recomputing the full sequence (exact match)",
+        "Verify per-token wall time with cache is lower than without for a 128-token generation (assert, and print both numbers)"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F021",
+      "category": "decode",
+      "description": "Prefill/decode split with timing hooks: engine reports time-to-first-token and per-token decode latency",
+      "steps": [
+        "Run `nanoserve generate ... --stats`",
+        "Verify TTFT (prefill) and mean/median decode ms/token are printed",
+        "Verify the numbers are plausible and stable across two runs (within 20%)"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F022",
+      "category": "decode",
+      "description": "Sampling: temperature, top-k, top-p with a seeded RNG; deterministic given a seed",
+      "steps": [
+        "Run test_sampling via ctest",
+        "Verify temperature=0 equals greedy",
+        "Verify top-k/top-p restrict the candidate set correctly on hand-built distributions",
+        "Verify two runs with the same seed produce identical outputs, different seeds differ"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F023",
+      "category": "decode",
+      "description": "Streaming: tokens are emitted to a callback as generated; CLI prints them incrementally with correct UTF-8 handling at token boundaries",
+      "steps": [
+        "Run `nanoserve generate ... ` and verify tokens appear incrementally, not all at once",
+        "Verify multi-byte UTF-8 characters split across tokens render correctly",
+        "Run test_streaming via ctest verifying callback ordering and byte-exact final text"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F024",
+      "category": "perf",
+      "description": "No heap allocations in the decode hot loop (buffers preallocated from config); verified by an allocation counter in debug builds",
+      "steps": [
+        "Run test_alloc via ctest",
+        "Verify allocation count during 16 decode steps is zero after warmup",
+        "Verify generation output is unchanged from before the refactor"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F025",
+      "category": "perf",
+      "description": "Multithreaded matmul via a persistent thread pool; >=2.5x speedup over single-thread on 8+ perf cores with identical outputs",
+      "steps": [
+        "Run test_ops via ctest (threaded matmul matches single-thread outputs exactly per reduction order or within 1e-5)",
+        "Run bench/ops microbenchmark: record single-thread vs threaded GEMV time for the lm_head shape",
+        "Verify >=2.5x speedup and record the measured number in the progress log",
+        "Verify end-to-end generate output is unchanged"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F026",
+      "category": "perf",
+      "description": "SIMD kernels (NEON on arm64, with scalar fallback) for dot/matmul/rmsnorm; measured speedup with correctness tests",
+      "steps": [
+        "Run test_ops via ctest: SIMD results match scalar within 1e-5",
+        "Run bench/ops microbenchmark: record scalar vs SIMD numbers",
+        "Verify speedup > 1.5x on the GEMV shapes and record measured numbers in the progress log",
+        "Verify the scalar fallback path still compiles and passes on x86 CI"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F027",
+      "category": "perf",
+      "description": "int8 weight quantization (per-row scales, offline pass) with quantized matmul; quality checked, speed measured",
+      "steps": [
+        "Run `nanoserve quantize` (or script) to produce an int8 weight file",
+        "Run test_quant via ctest: dequantized weights within expected error; forward top-1 unchanged on golden prompts",
+        "Measure tok/s fp32 vs int8 with the bench harness and record both numbers",
+        "Verify greedy continuations on the 3 golden prompts are unchanged (or document divergence honestly)"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F028",
+      "category": "python",
+      "description": "pybind11 bindings: `import nanoserve; nanoserve.Engine(model_dir).generate(prompt, max_tokens=...)` works from Python",
+      "steps": [
+        "Run `pip install -e .` (scikit-build-core) in the venv",
+        "Run `python -c \"import nanoserve; print(nanoserve.Engine('models/qwen2.5-0.5b-instruct').generate('Hello', max_tokens=8))\"`",
+        "Verify output matches the CLI for the same settings",
+        "Run the Python-side pytest in tests/python/"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F029",
+      "category": "python",
+      "description": "Python streaming API: generate(..., stream=True) yields tokens as they are produced, with stats (ttft, tok/s) on the result object",
+      "steps": [
+        "Run the streaming example in tests/python/",
+        "Verify tokens arrive incrementally (timestamps recorded per token)",
+        "Verify result.ttft_ms and result.tokens_per_second are populated and plausible"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F030",
+      "category": "bench",
+      "description": "Python benchmark harness: measures prefill TTFT and decode tok/s over fixed prompt/generation lengths, N repeats with warmup, writes JSON + pretty table",
+      "steps": [
+        "Run `python bench/run.py --engine nanoserve --repeats 5`",
+        "Verify JSON results land in bench/results/ with machine info (chip, core count, RAM)",
+        "Verify a readable table (mean +/- std) is printed",
+        "Verify repeat-to-repeat variance < 10% or flagged in output"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F031",
+      "category": "bench",
+      "description": "llama.cpp comparison: same model, same machine, matched settings (threads, context, fp32/quant level), driven by the same harness",
+      "steps": [
+        "Build llama.cpp at a pinned commit via bench/setup_llamacpp.sh; convert/download the matched GGUF",
+        "Run `python bench/run.py --engine llama.cpp --repeats 5` with matched settings",
+        "Verify the harness records llama.cpp version, build flags, and settings in the JSON",
+        "Verify a combined comparison table prints both engines side by side"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F032",
+      "category": "bench",
+      "description": "README benchmark section auto-generated from bench results: reproducible command, hardware disclosure, honest gap statement vs llama.cpp",
+      "steps": [
+        "Run `python bench/report.py` to regenerate the README table from bench/results/",
+        "Verify the README shows tok/s + TTFT for nanoserve and llama.cpp with the exact repro command and hardware/versions",
+        "Verify no number in the README was hand-typed (all injected from results JSON)"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F033",
+      "category": "stretch",
+      "description": "Metal backend for the matmul path (M-series GPU), parity-tested against CPU, benchmarked with the same harness",
+      "steps": [
+        "Run test_metal via ctest on macOS (skips elsewhere): GPU matmul matches CPU within 1e-3",
+        "Run generate with --backend metal and verify identical greedy output on golden prompts",
+        "Benchmark CPU vs Metal with bench/run.py and record both"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F034",
+      "category": "stretch",
+      "description": "Paged KV cache: fixed-size blocks with a free-list allocator, enabling long generations without preallocating max context",
+      "steps": [
+        "Run test_kvcache paged cases via ctest: outputs identical to the contiguous cache",
+        "Verify memory high-water mark for a short generation is much lower than the full-context preallocation (print both)",
+        "Verify a generation that exceeds one block boundary is still exact"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F035",
+      "category": "stretch",
+      "description": "HTTP serving endpoint: POST /v1/completions (subset of the OpenAI schema) with streaming (SSE), served from the C++ engine",
+      "steps": [
+        "Run `nanoserve serve models/qwen2.5-0.5b-instruct --port 8080`",
+        "Run `curl localhost:8080/v1/completions -d '{...}'` and verify a well-formed completion response",
+        "Verify stream:true produces SSE chunks token by token",
+        "Run test_server via ctest (spawns server, requests, checks response)"
+      ],
+      "passes": false
+    },
+    {
+      "id": "F036",
+      "category": "stretch",
+      "description": "Continuous batching in the server: two concurrent requests share decode steps; throughput improves vs serial",
+      "steps": [
+        "Fire 4 concurrent requests at the server and verify all complete correctly",
+        "Verify combined throughput exceeds serial execution of the same 4 requests (print both)",
+        "Verify single-request latency does not regress beyond 20%"
+      ],
+      "passes": false
+    }
+  ]
+}

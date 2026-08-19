@@ -1,0 +1,57 @@
+---
+Session: 2026-08-18 (Session 1 — Initializer)
+Completed: Project scaffolding + F001-F003, F005-F012 (11/36 features passing)
+Notes:
+  - Initialized git repo, CMake C++20 project, warnings-as-errors
+    (-Wall -Wextra -Wpedantic -Werror -Wshadow -Wconversion -Wsign-conversion).
+    Zero third-party C++ deps by design.
+  - Layout: src/core (json, dtype, mmap_file, safetensors), src/model (config,
+    tokenizer), src/server (CLI), tests/ (plain-executable ctest tests,
+    exit 77 = skip), bench/ (empty until F030), scripts/.
+  - Model chosen: Qwen2.5-0.5B-Instruct — verified via HF API: license
+    apache-2.0, gated=false, no token needed. Downloaded to
+    models/qwen2.5-0.5b-instruct/ (942MB bf16 safetensors; git-ignored).
+    Architecture confirmed: hidden 896, 24 layers, 14 heads / 2 kv heads (GQA),
+    head_dim 64, vocab 151936, rope_theta 1e6, tied embeddings.
+  - Implemented and tested:
+    * Minimal strict JSON parser (objects/arrays/numbers/escapes incl. UTF-16
+      surrogates; rejects malformed input) — test_json, 40 checks.
+    * mmap'd safetensors loader: header parse, bounds validation, tensor lookup,
+      bf16/f16 -> f32 widening. Verified against numpy goldens generated from
+      the real checkpoint: 290 tensors, 494,032,768 params, embed values
+      bit-exact — test_safetensors.
+    * Typed ModelConfig from config.json with loud missing-field errors —
+      test_config.
+    * Byte-level BPE tokenizer (GPT-2 lineage): hand-rolled pretokenizer scanner
+      mirroring Qwen's regex, merge-rank BPE, specials from
+      tokenizer_config.json added_tokens_decoder. encode() matches HF
+      `tokenizers` EXACTLY on a 25-prompt English corpus + 3 specials cases;
+      decode() roundtrips byte-identically — test_tokenizer, 62 checks.
+    * CLI: `nanoserve inspect` (tensor table + totals), `nanoserve tokenize`
+      (ids + roundtrip check), `version`.
+  - Bug found & fixed during testing: merges.txt loader treated the line
+    "# $" as a comment; only the first "#version" line is a comment. Caught by
+    the golden corpus (punctuation prompt), fixed, all 62 checks green.
+  - Unicode note (honest limitation): pretokenizer \p{L}/\p{N} classes are
+    exact for ASCII, approximate block ranges for non-ASCII. English corpus is
+    exact-parity; full CJK/emoji parity is F014 (needs generated Unicode
+    tables, llama.cpp-style).
+  - Golden vectors are COMMITTED (tests/data/) so C++ tests never need Python.
+    Regenerate with .venv/bin/python scripts/gen_golden.py (venv has
+    tokenizers + numpy; .venv is git-ignored).
+  - Verified CI skip path: with models/ absent, test_json passes and the three
+    model-dependent tests report Skipped (exit 77 / SKIP_RETURN_CODE). CI
+    workflow (.github/workflows/ci.yml, ubuntu+macos) is committed but F004
+    stays false until the user creates the GitHub repo and pushes.
+  - Per user direction: README/docs framed around inference-systems
+    understanding (KV cache, quantization, serving, benchmarks), NOT C++
+    showcase. Python surface (pybind11 bindings F028-F029, Python bench
+    harness F030-F032) is in the feature list. Readability > cleverness.
+  - init.sh green end-to-end: toolchain check, build, 4/4 ctest.
+  - cmake was installed via homebrew this session (4.4.2). clang-format not
+    installed; .clang-format committed, run it once installed.
+Next: F013 (chat-template helper + golden ids via HF apply_chat_template —
+  needed before generate() can build chat prompts), then F015 (fp32 ops:
+  matmul/rmsnorm/softmax/silu vs numpy goldens — gen_golden.py needs an ops
+  section) and F016 (RoPE). That unlocks the layer-forward chain F017-F019.
+  Keep each op verified against a golden before wiring the next.
