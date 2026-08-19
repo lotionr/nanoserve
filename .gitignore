@@ -1,0 +1,27 @@
+# Build artifacts
+build/
+cmake-build-*/
+*.o
+*.a
+*.dylib
+*.so
+
+# Model weights — downloaded via scripts/download_model.sh, never committed
+models/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+
+# Benchmark outputs (results tables are regenerated; curated results live in README)
+bench/results/
+
+# Editor / OS noise
+.DS_Store
+.cache/
+compile_commands.json
+.vscode/
+.idea/

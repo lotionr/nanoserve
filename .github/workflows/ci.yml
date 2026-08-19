@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (warnings-as-errors)
+        run: cmake --build build -j 4
+
+      # Model weights are not downloaded in CI; model-dependent tests exit 77
+      # and are reported as SKIPPED by ctest, not failed.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
