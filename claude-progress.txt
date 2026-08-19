@@ -1,4 +1,72 @@
 ---
+Session: 2026-08-19 (Session 4 — int8, Python bindings, and the benchmark)
+Completed: F027-F032 (31/36 features passing; 13/13 ctest green + 6/6 pytest)
+Notes:
+  - F027 int8 (core/quant.*, ops::linear_q8): symmetric per-row absmax
+    (scale = absmax/127), offline `nanoserve quantize` writes a safetensors
+    file (I8 tensors keep their names + "<name>.scale" F32 companions;
+    473 MiB vs 942 MiB bf16). One Weight struct dispatches fp32/int8 through
+    the same load + forward path; embedding rows dequantize on lookup. NEON
+    kernel widens int8->fp32 in-register (same 4-accumulator shape as
+    dot_f32) so the math equals dequantize-then-dot exactly; only the memory
+    traffic changes. CLI: quantize + generate --int8.
+  - F027 quality, measured: greedy continuations IDENTICAL to the fp32
+    goldens on ALL 4 prompts (8/8, 21/21, 8/8, 32/32 tokens); top-1
+    unchanged on all 3 logits goldens; top-10 logit shift vs HF fp32 max
+    0.12-0.27 (logits ~20); max dequant err respects scale/2. SUBTLETY: on
+    real weights a value sitting EXACTLY on a .5 tie can round one
+    product-ulp past scale/2 because the quantizer multiplies by
+    (127/absmax), not divides by scale — observed rel 1.000007, test bound
+    is scale/2 * 1.0001 with a comment.
+  - F027 HYPOTHESIS RESULT (session 3 predicted int8 helps decode more than
+    flop math suggests): CONFIRMED. Same fma count + EXTRA widening work,
+    yet decode went 22.3 -> 11.75 ms/token (1.9x, CLI --stats medians of 3
+    interleaved runs); prefill only 1.35x (compute-bound, as expected).
+    Not the full 4x bandwidth ratio: the widening adds compute and non-weight
+    traffic remains; int8 runs were also visibly steadier than fp32.
+  - F028/F029 (src/python/bindings.cpp, python/nanoserve/, pyproject.toml):
+    scikit-build-core + pybind11; pip install -e . AND pip wheel . (full
+    build isolation) both verified. GenerateResult(text, token_ids,
+    prompt_tokens, ttft_ms, tokens_per_second). Streaming = TokenStream
+    iterator, ONE decode step per __next__ (no threads/queues; the Python
+    for-loop is the decode loop), GIL released around every forward, UTF-8
+    holdback chunks never yielded empty. pybind11 module compiles WITHOUT
+    nanoserve_warnings (its headers aren't -Wconversion-clean); core still
+    warnings-as-errors. pytest 6/6: ids+text match the CLI exactly, seeded
+    determinism, per-chunk timestamps prove incremental arrival,
+    stream == non-stream, stats plausible.
+  - F030-F032 (bench/run.py, setup_llamacpp.sh, report.py): pinned workload
+    (41-token chat prompt x 64 greedy tokens), warmup 1, repeats 5,
+    mean+/-std, >10% dispersion flagged, machine info + engine versions in
+    JSON. llama.cpp pinned via bench/llamacpp.lock (5112b97), built CPU-only
+    (Metal OFF), f32 GGUF converted FROM OUR safetensors so fp32 is exactly
+    like-for-like; Q8_0 quantized from that (per-32-block, 8.5 BPW vs our
+    per-row 8.0 — documented, not hidden). report.py rewrites README between
+    BENCH markers; table/gaps/hardware all injected from results JSON.
+  - BENCH RESULTS (M3 Pro, 5 threads, in the README now): nanoserve fp32
+    51.3+/-1.0 decode tok/s vs llama.cpp f32 55.4+/-3.0 (1.08x gap — near
+    parity); int8 106.2+/-0.7 vs Q8_0 197.8+/-1.2 (1.86x gap); prefill
+    140.8/184.9 vs 552/1514 (llama.cpp's lead there is largely Accelerate
+    BLAS GEMM + real int8 dot kernels). THREADS MATTER: at 11 threads
+    llama.cpp decode DROPS to 76 tok/s q8_0 (E-core contention) and ours to
+    82.9; decode is fastest at 5 P-core threads for BOTH engines, so the
+    table uses 5 and says why. The 1.86x q8 gap has a clear next step:
+    llama.cpp computes int8 dot products in integer SIMD (sdot) while we
+    widen to fp32 — that plus prefill GEMM blocking is the remaining perf
+    story.
+  - Gotchas hit: convert_hf_to_gguf.py globs EVERY *.safetensors in the
+    model dir (choked on our model.int8.safetensors -> convert from a clean
+    symlink dir); it also imports sentencepiece just to probe before falling
+    back to BPE (pip install sentencepiece); llama.cpp's llama-cli target
+    doesn't exist in a tools-only build — llama-bench + llama-quantize are
+    all the harness needs.
+Next: stretch features in order — F033 Metal backend (matmul parity test +
+  --backend metal + bench), F034 paged KV cache, F035 HTTP serve, F036
+  continuous batching. Also worth considering (not on the list): integer
+  sdot int8 kernel to close the 1.86x decode gap, and prefill GEMM blocking
+  — each would need a measured before/after in bench/results. F004 (CI on
+  GitHub) still waits on the user creating the remote repo.
+---
 Session: 2026-08-19 (Session 3 — Sampling, streaming, and the perf arc)
 Completed: F022-F026 (25/36 features passing; 12/12 ctest green)
 Notes:
