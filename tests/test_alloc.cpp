@@ -8,11 +8,16 @@
 // A canary check proves the counter actually intercepts allocations, so the
 // zero-assert can't pass vacuously. Finally the F019 golden re-runs to show
 // the refactor changed no output.
+//
+// The int8 engine is checked too: its kernel keeps a runtime scratch of
+// quantized activations (grow-only, sized by the prefill), and this test is
+// what proves int8 decode steps also allocate nothing.
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <new>
 #include <string>
 #include <vector>
@@ -119,6 +124,27 @@ int main() {
     std::printf("decode: 0 allocations over 16+16 steps "
                 "(greedy %.1f ms/token, sampling %.1f ms/token)\n",
                 greedy_ms, sampling_ms);
+
+    // Same bar for the int8 engine: linear_q8 quantizes activations into a
+    // grow-only scratch (ops.cpp) that the prefill must size once — decode
+    // steps after warmup may not allocate. Reuses test_quant's file if it
+    // exists, else quantizes here (ctest order is not guaranteed).
+    const std::string int8_file = dir + "/model.int8.safetensors";
+    if (!std::filesystem::exists(int8_file)) {
+        nano::quantize_model_file(dir, int8_file);
+    }
+    nano::Engine q8_engine(dir, 2048, int8_file);
+    logits = q8_engine.forward(prompt_ids);
+    const int32_t warm_q8[] = {nano::argmax(logits)};
+    logits = q8_engine.forward(warm_q8);
+
+    double q8_ms = 0.0;
+    const int64_t q8_allocs =
+        count_decode_allocs(q8_engine, greedy, logits, 16, &q8_ms);
+    NANO_CHECK_MSG(q8_allocs == 0, "%lld allocations in 16 int8 decode steps",
+                   static_cast<long long>(q8_allocs));
+    std::printf("int8 decode: 0 allocations over 16 steps (%.1f ms/token)\n",
+                q8_ms);
 
     // The refactor must not have changed a single token: re-check the first
     // HF greedy golden end to end.
