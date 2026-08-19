@@ -319,7 +319,7 @@
         "Verify output matches the CLI for the same settings",
         "Run the Python-side pytest in tests/python/"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F029",
@@ -330,7 +330,7 @@
         "Verify tokens arrive incrementally (timestamps recorded per token)",
         "Verify result.ttft_ms and result.tokens_per_second are populated and plausible"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F030",

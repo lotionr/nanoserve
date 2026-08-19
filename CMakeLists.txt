@@ -10,6 +10,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(NANOSERVE_BUILD_TESTS "Build nanoserve tests" ON)
+option(NANOSERVE_BUILD_PYTHON "Build the pybind11 Python module (F028)" OFF)
 
 add_library(nanoserve_warnings INTERFACE)
 target_compile_options(nanoserve_warnings INTERFACE
@@ -48,6 +49,20 @@ target_link_libraries(nanoserve_core_scalar PRIVATE nanoserve_warnings)
 # --- CLI --------------------------------------------------------------------
 add_executable(nanoserve src/server/main.cpp)
 target_link_libraries(nanoserve PRIVATE nanoserve_core nanoserve_warnings)
+
+# --- Python bindings (F028) ---------------------------------------------------
+# Built only by pip/scikit-build-core (pyproject.toml turns this ON); the
+# plain CMake build stays Python-free. The bindings file compiles WITHOUT
+# nanoserve_warnings: pybind11's headers are not clean under
+# -Wconversion/-Wsign-conversion, and -Werror would make their warnings
+# fatal. The core library itself is still built with the full set.
+if(NANOSERVE_BUILD_PYTHON)
+    find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
+    find_package(pybind11 CONFIG REQUIRED)
+    pybind11_add_module(_nanoserve src/python/bindings.cpp)
+    target_link_libraries(_nanoserve PRIVATE nanoserve_core)
+    install(TARGETS _nanoserve LIBRARY DESTINATION nanoserve)
+endif()
 
 # --- microbenchmarks (not tests; see bench/bench_ops.cpp header) -------------
 add_executable(bench_ops bench/bench_ops.cpp)

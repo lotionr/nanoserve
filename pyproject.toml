@@ -1,0 +1,25 @@
+# Python packaging for the pybind11 bindings (F028).
+# `pip install -e .` builds the C++ core + bindings via scikit-build-core.
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "nanoserve"
+version = "0.1.0"
+description = "From-scratch LLM inference engine (Qwen2.5-0.5B-Instruct): C++20 core, Python bindings"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.24"
+wheel.packages = ["python/nanoserve"]
+
+[tool.scikit-build.cmake.define]
+NANOSERVE_BUILD_PYTHON = "ON"
+NANOSERVE_BUILD_TESTS = "OFF"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
