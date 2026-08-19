@@ -75,6 +75,19 @@ struct Qwen2Model {
                            const std::string& weights_file = "");
 };
 
+/// y[t, :] = x[t, :] @ W^T + bias, picking the fp32 or int8 kernel. The
+/// matrix knows its own shape, so call sites can't transpose dimensions.
+/// Exposed (rather than staying a qwen2.cpp helper) because the batched
+/// decode path (batch.cpp, F036) runs the same projections over rows drawn
+/// from different sequences.
+void weight_linear(const Weight& w, const float* x, const float* bias, float* y,
+                   int64_t tokens);
+
+/// Embedding lookup: out[i, :] = embed_tokens[ids[i], :], dequantizing the
+/// looked-up row if the table is int8. Shared by Engine (below) and
+/// BatchEngine (batch.hpp).
+void embed_rows(const Qwen2Model& model, std::span<const int32_t> ids, float* out);
+
 /// Offline quantization pass (F027): reads model_dir/model.safetensors,
 /// quantizes every 2D weight matrix to int8 with per-row scales
 /// (quantize_rows), keeps norms/biases fp32, and writes a safetensors file

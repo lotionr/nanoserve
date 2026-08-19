@@ -26,6 +26,7 @@ set(NANOSERVE_CORE_SOURCES
     src/core/quant.cpp
     src/core/safetensors.cpp
     src/core/threadpool.cpp
+    src/model/batch.cpp
     src/model/chat_template.cpp
     src/model/config.cpp
     src/model/paged_kv.cpp
@@ -124,6 +125,7 @@ if(NANOSERVE_BUILD_TESTS)
     nanoserve_test(test_generate)
     nanoserve_test(test_kvcache)
     nanoserve_test(test_paged_alloc)  # model-free: runs everywhere, incl. CI
+    nanoserve_test(test_batch)   # F036: batched == solo, bit for bit; skips w/o model
     nanoserve_test(test_sampling)
     nanoserve_test(test_streaming)
     nanoserve_test(test_alloc)

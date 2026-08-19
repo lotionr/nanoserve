@@ -55,17 +55,6 @@ Weight load_weight(const SafeTensors& st, const std::string& name, int64_t rows,
     return w;
 }
 
-/// y[t, :] = x[t, :] @ W^T + bias, picking the fp32 or int8 kernel. The
-/// matrix knows its own shape, so call sites can't transpose dimensions.
-void linear(const Weight& w, const float* x, const float* bias, float* y,
-            int64_t tokens) {
-    if (w.quantized()) {
-        ops::linear_q8(x, w.q8.data(), w.scales.data(), bias, y, tokens, w.cols, w.rows);
-    } else {
-        ops::linear(x, w.f32.data(), bias, y, tokens, w.cols, w.rows);
-    }
-}
-
 /// Walks every buffer the GPU kernels might bind — weight matrices (fp32 or
 /// int8 + scales) and the qkv biases — and registers or unregisters each
 /// with the metal backend. Norms are skipped: rmsnorm always runs on the
@@ -104,6 +93,36 @@ void register_model_weights(const Qwen2Model& m, bool reg) {
 }
 
 }  // namespace
+
+// Declared in qwen2.hpp; kept here next to the ops:: kernels it dispatches to.
+void weight_linear(const Weight& w, const float* x, const float* bias, float* y,
+                   int64_t tokens) {
+    if (w.quantized()) {
+        ops::linear_q8(x, w.q8.data(), w.scales.data(), bias, y, tokens, w.cols, w.rows);
+    } else {
+        ops::linear(x, w.f32.data(), bias, y, tokens, w.cols, w.rows);
+    }
+}
+
+void embed_rows(const Qwen2Model& model, std::span<const int32_t> ids, float* out) {
+    const int64_t H = model.config.hidden_size;
+    const Weight& e = model.embed_tokens;
+    for (size_t i = 0; i < ids.size(); ++i) {
+        float* dst = out + static_cast<int64_t>(i) * H;
+        if (e.quantized()) {
+            // Dequantize the one looked-up row: q * its row scale. This is
+            // the only quantization error the embedding lookup introduces.
+            const int8_t* row = e.q8.data() + int64_t{ids[i]} * H;
+            const float scale = e.scales[static_cast<size_t>(ids[i])];
+            for (int64_t j = 0; j < H; ++j) {
+                dst[j] = static_cast<float>(row[j]) * scale;
+            }
+        } else {
+            std::memcpy(dst, e.f32.data() + int64_t{ids[i]} * H,
+                        sizeof(float) * static_cast<size_t>(H));
+        }
+    }
+}
 
 Qwen2Model Qwen2Model::load(const std::string& model_dir,
                             const std::string& weights_file) {
@@ -234,13 +253,13 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
 
     // --- attention block: hidden += o_proj(attend(rope(qkv(norm(hidden))))) ---
     ops::rmsnorm(hidden, w.input_norm.data(), normed.data(), tokens, H, eps);
-    linear(w.q_w, normed.data(), w.q_b.data(), q.data(), tokens);
+    weight_linear(w.q_w, normed.data(), w.q_b.data(), q.data(), tokens);
     for (int64_t t = 0; t < tokens; ++t) {
         // K and V rows are computed straight into the cache — after this
         // loop the cache holds positions [0, pos0 + tokens).
         const float* in = normed.data() + t * H;
-        linear(w.k_w, in, w.k_b.data(), cache.k_row(layer_idx, pos0 + t), 1);
-        linear(w.v_w, in, w.v_b.data(), cache.v_row(layer_idx, pos0 + t), 1);
+        weight_linear(w.k_w, in, w.k_b.data(), cache.k_row(layer_idx, pos0 + t), 1);
+        weight_linear(w.v_w, in, w.v_b.data(), cache.v_row(layer_idx, pos0 + t), 1);
         ops::rope(q.data() + t * q_dim, c.num_heads, D, pos0 + t, theta);
         ops::rope(cache.k_row(layer_idx, pos0 + t), c.num_kv_heads, D, pos0 + t, theta);
     }
@@ -268,7 +287,7 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
             }
         }
     }
-    linear(w.o_w, attn.data(), nullptr, proj.data(), tokens);
+    weight_linear(w.o_w, attn.data(), nullptr, proj.data(), tokens);
     ops::add(hidden, proj.data(), hidden, tokens * H);
 
     // --- MLP block: hidden += down(silu(gate(norm(hidden))) * up(norm(hidden))) ---
@@ -276,11 +295,11 @@ void layer_forward(const Qwen2Model& model, int64_t layer_idx, float* hidden,
     std::vector<float>& gate = scratch.gate;
     std::vector<float>& up = scratch.up;
     ops::rmsnorm(hidden, w.post_norm.data(), normed.data(), tokens, H, eps);
-    linear(w.gate_w, normed.data(), nullptr, gate.data(), tokens);
-    linear(w.up_w, normed.data(), nullptr, up.data(), tokens);
+    weight_linear(w.gate_w, normed.data(), nullptr, gate.data(), tokens);
+    weight_linear(w.up_w, normed.data(), nullptr, up.data(), tokens);
     ops::silu(gate.data(), tokens * I);
     ops::mul(gate.data(), up.data(), gate.data(), tokens * I);
-    linear(w.down_w, gate.data(), nullptr, proj.data(), tokens);
+    weight_linear(w.down_w, gate.data(), nullptr, proj.data(), tokens);
     ops::add(hidden, proj.data(), hidden, tokens * H);
 }
 
@@ -320,23 +339,7 @@ Engine::~Engine() {
 }
 
 void Engine::embed(std::span<const int32_t> ids, float* out) const {
-    const int64_t H = model_.config.hidden_size;
-    const Weight& e = model_.embed_tokens;
-    for (size_t i = 0; i < ids.size(); ++i) {
-        float* dst = out + static_cast<int64_t>(i) * H;
-        if (e.quantized()) {
-            // Dequantize the one looked-up row: q * its row scale. This is
-            // the only quantization error the embedding lookup introduces.
-            const int8_t* row = e.q8.data() + int64_t{ids[i]} * H;
-            const float scale = e.scales[static_cast<size_t>(ids[i])];
-            for (int64_t j = 0; j < H; ++j) {
-                dst[j] = static_cast<float>(row[j]) * scale;
-            }
-        } else {
-            std::memcpy(dst, e.f32.data() + int64_t{ids[i]} * H,
-                        sizeof(float) * static_cast<size_t>(H));
-        }
-    }
+    embed_rows(model_, ids, out);
 }
 
 void Engine::reset() {
@@ -387,7 +390,7 @@ std::span<const float> Engine::forward_with(Cache& cache, std::span<const int32_
     float* normed = scratch_.final_normed.data();
     ops::rmsnorm(hidden_.data() + (tokens - 1) * H, model_.final_norm.data(),
                  normed, 1, H, static_cast<float>(c.rms_norm_eps));
-    linear(model_.embed_tokens, normed, nullptr, logits_.data(), 1);
+    weight_linear(model_.embed_tokens, normed, nullptr, logits_.data(), 1);
     return logits_;
 }
 
