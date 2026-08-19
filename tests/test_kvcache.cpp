@@ -82,7 +82,7 @@ int main() {
         const std::vector<float>& want = cached_logits[static_cast<size_t>(i)];
         size_t diffs = 0;
         for (size_t j = 0; j < want.size(); ++j) {
-            diffs += logits[j] != want[j] ? 1 : 0;
+            if (logits[j] != want[j]) ++diffs;
         }
         NANO_CHECK_MSG(diffs == 0,
                        "step %lld: %zu/%zu logits differ between cached and "
@@ -164,7 +164,7 @@ int main() {
             const std::vector<float>& want = contig_logits[static_cast<size_t>(i)];
             size_t diffs = 0;
             for (size_t j = 0; j < want.size(); ++j) {
-                diffs += logits[j] != want[j] ? 1 : 0;
+                if (logits[j] != want[j]) ++diffs;
             }
             NANO_CHECK_MSG(diffs == 0,
                            "step %lld: %zu/%zu logits differ between paged and "
