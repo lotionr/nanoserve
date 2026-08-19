@@ -11,9 +11,21 @@
 // by the scale once at the end. (llama.cpp's Q8_0 is the same idea at finer
 // granularity: one scale per 32-value block instead of per row.)
 //
-// Weights only; activations stay fp32. The win this targets is memory
-// bandwidth — decode reads every weight once per token, and int8 reads 4x
-// fewer bytes than fp32 — not integer arithmetic throughput.
+// The same scheme quantizes ACTIVATIONS at runtime (inside ops::linear_q8),
+// so the kernel can do its dot products in int8 x int8 -> int32 integer
+// SIMD (sdot). Activations get one scale per 32-VALUE BLOCK, not per row:
+// activation rows carry outliers (a handful of values 10-100x the typical
+// magnitude), and one row-wide absmax scale rounds everything else so
+// coarsely that greedy decoding visibly diverged — measured, not guessed
+// (see the session log; the FIRST greedy token flipped on 1 of the 4 golden
+// prompts). Per-32-block is exactly the granularity llama.cpp's Q8_0 uses
+// for activations; with it, top-1 holds on every logits golden and every
+// greedy token whose fp32 top-2 margin exceeds 0.12 is preserved — the one
+// remaining flip sits at a 0.03-margin near-tie (details in test_quant and
+// the session log). Weights keep per-row scales (they are smooth, and it
+// keeps the file format unchanged).
+// quantize_row_q8 below is the single quantizer both paths share — a
+// "block" is just a 32-value row.
 #pragma once
 
 #include <cstdint>
@@ -33,8 +45,26 @@ struct QuantMatrix {
     std::vector<float> scales;   // [rows]
 };
 
-/// Quantizes a row-major [rows, cols] fp32 matrix, per-row absmax symmetric.
-/// An all-zero row gets scale 0 and all-zero values (dequantizes exactly).
+/// Quantizes one row of n fp32 values into `out`, symmetric absmax, and
+/// returns the scale (absmax / 127; 0 for an all-zero row, with all-zero
+/// values so it dequantizes exactly). This is THE quantizer: quantize_rows
+/// calls it per weight row offline, quantize_row_q8_blocks calls it per
+/// 32-value activation block at runtime.
+float quantize_row_q8(const float* src, int8_t* out, int64_t n);
+
+/// Activation-block granularity for the runtime side of linear_q8.
+/// 32 matches llama.cpp's Q8_0 and divides every width in this model
+/// (hidden 896, kv 128, intermediate 4864) — but a trailing partial block
+/// is still handled, with its own scale over the remainder.
+constexpr int64_t kQ8Block = 32;
+
+/// Quantizes one row of n values in blocks of kQ8Block: block b covers
+/// values [b*32, min((b+1)*32, n)) and writes its scale to scales[b].
+/// scales must hold ceil(n / 32) floats.
+void quantize_row_q8_blocks(const float* src, int8_t* out, float* scales, int64_t n);
+
+/// Quantizes a row-major [rows, cols] fp32 matrix, per-row absmax symmetric
+/// (quantize_row_q8 applied to each row).
 QuantMatrix quantize_rows(const float* w, int64_t rows, int64_t cols);
 
 /// Dequantized value at (row, col) — the reference for error checks.

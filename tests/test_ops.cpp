@@ -4,6 +4,7 @@
 // this test needs no model download and no Python — it always runs.
 #include "core/ops.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "core/json.hpp"
+#include "core/quant.hpp"
 #include "testing.hpp"
 
 namespace {
@@ -84,6 +86,57 @@ int main() {
             }
         }
         check_close(y, want_nobias, 1e-4f, 1e-5f, "linear(no bias)");
+    }
+
+    {  // linear_q8: the integer int8 kernel, on THIS build's path.
+        // test_quant covers it in depth on the NEON build; this copy of the
+        // math-replay check also runs in test_ops_scalar (NANO_FORCE_SCALAR),
+        // so the scalar integer fallback x86 CI will take is executed here,
+        // not assumed. Reference: per-32-block activation quantization, each
+        // block's dot EXACT in int32, block results combined in double —
+        // tolerance only covers the cross-block fp summation order.
+        // d_in = 100 exercises 3 full blocks + a 4-value partial block.
+        std::mt19937 rng(11);
+        std::normal_distribution<float> dist(0.0f, 1.0f);
+        const int64_t tokens = 2, d_in = 100, d_out = 3;
+        const int64_t x_blocks = (d_in + nano::kQ8Block - 1) / nano::kQ8Block;
+        std::vector<float> x(static_cast<size_t>(tokens * d_in));
+        std::vector<float> w(static_cast<size_t>(d_out * d_in));
+        for (float& v : x) v = dist(rng);
+        for (float& v : w) v = dist(rng);
+        const nano::QuantMatrix qw = nano::quantize_rows(w.data(), d_out, d_in);
+        std::vector<int8_t> xq(static_cast<size_t>(tokens * d_in));
+        std::vector<float> xs(static_cast<size_t>(tokens * x_blocks));
+        for (int64_t t = 0; t < tokens; ++t) {
+            nano::quantize_row_q8_blocks(x.data() + t * d_in, xq.data() + t * d_in,
+                                         xs.data() + t * x_blocks, d_in);
+        }
+
+        std::vector<float> y(static_cast<size_t>(tokens * d_out));
+        nano::ops::linear_q8(x.data(), qw.q.data(), qw.scales.data(), nullptr,
+                             y.data(), tokens, d_in, d_out);
+        std::vector<float> want(static_cast<size_t>(tokens * d_out));
+        for (int64_t t = 0; t < tokens; ++t) {
+            for (int64_t o = 0; o < d_out; ++o) {
+                double acc = 0.0;
+                for (int64_t b = 0; b < x_blocks; ++b) {
+                    int32_t isum = 0;
+                    const int64_t end = std::min(d_in, (b + 1) * nano::kQ8Block);
+                    for (int64_t i = b * nano::kQ8Block; i < end; ++i) {
+                        isum += static_cast<int32_t>(
+                                    xq[static_cast<size_t>(t * d_in + i)]) *
+                                static_cast<int32_t>(
+                                    qw.q[static_cast<size_t>(o * d_in + i)]);
+                    }
+                    acc += static_cast<double>(
+                               xs[static_cast<size_t>(t * x_blocks + b)]) *
+                           isum;
+                }
+                want[static_cast<size_t>(t * d_out + o)] = static_cast<float>(
+                    static_cast<double>(qw.scales[static_cast<size_t>(o)]) * acc);
+            }
+        }
+        check_close(y, want, kRtol, kAtol, "linear_q8");
     }
 
     {  // matmul: c = a @ b

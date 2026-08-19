@@ -4,17 +4,23 @@
 //   1. quantize_rows math on hand-built and random matrices: scale =
 //      absmax/127, every dequantized value within scale/2 of the original,
 //      exact round-trip when the values are representable, zero-row safety.
-//   2. The int8 kernel: linear_q8 matches a dequantize-then-linear reference
-//      within fp tolerance, and is bit-identical across thread counts.
+//   2. The int8 kernel: linear_q8 (integer sdot path: activations quantized
+//      per 32-value block at runtime, int8 x int8 -> int32 dots per block)
+//      matches a plain-loop replay of its documented math (exact int block
+//      sums, fp tolerance only for the cross-block summation order), stays
+//      within the analytic error bound of the true fp32 linear, and is
+//      bit-identical across thread counts.
 //      The safetensors writer round-trips through our own reader.
 //   3. The real model (skips without weights): `quantize_model_file` output
 //      loads, and the quantized engine's top-1 token matches the HF golden
 //      argmax on all 3 logits prompts. Greedy 32-token continuations are
-//      compared against the fp32 goldens and any divergence is PRINTED
-//      honestly (quantization is lossy; the acceptance bar is top-1
-//      unchanged, with divergence documented — see feature_list.json).
+//      compared against the fp32 goldens; a divergence is tolerated ONLY at
+//      a genuine near-tie — the flipped step's fp32 top-2 margin must be
+//      under 0.1 (measured by teacher-forcing the golden prefix), otherwise
+//      the test fails. Everything is printed honestly either way.
 #include "core/quant.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -115,19 +121,41 @@ void test_linear_q8_kernel() {
 
         const nano::QuantMatrix q = nano::quantize_rows(w.data(), d_out, d_in);
 
-        // Reference: dequantize, then the plain scalar linear. linear_q8
-        // must equal this up to fp reduction order (NEON sums in a
-        // different order), hence tolerance, not equality.
+        // Reference: replay the kernel's documented math in plain code —
+        // quantize each activation row per 32-value block with the same
+        // shared quantizer, take each block's EXACT int32 dot, and combine
+        // the per-block results in double. The int parts must agree with
+        // the sdot lanes bit-for-bit; the fp32 summation across blocks is
+        // order-dependent, so the comparison carries the usual fp slack.
+        const int64_t x_blocks = (d_in + nano::kQ8Block - 1) / nano::kQ8Block;
+        std::vector<int8_t> xq(static_cast<size_t>(tokens * d_in));
+        std::vector<float> xs(static_cast<size_t>(tokens * x_blocks));
+        for (int64_t t = 0; t < tokens; ++t) {
+            nano::quantize_row_q8_blocks(x.data() + t * d_in, xq.data() + t * d_in,
+                                         xs.data() + t * x_blocks, d_in);
+        }
         std::vector<float> ref(static_cast<size_t>(tokens * d_out));
         for (int64_t t = 0; t < tokens; ++t) {
             for (int64_t o = 0; o < d_out; ++o) {
                 double acc = 0.0;
-                for (int64_t i = 0; i < d_in; ++i) {
-                    acc += static_cast<double>(x[static_cast<size_t>(t * d_in + i)]) *
-                           static_cast<double>(nano::dequant_at(q, o, i));
+                for (int64_t b = 0; b < x_blocks; ++b) {
+                    int32_t isum = 0;
+                    const int64_t end = std::min(d_in, (b + 1) * nano::kQ8Block);
+                    for (int64_t i = b * nano::kQ8Block; i < end; ++i) {
+                        isum += static_cast<int32_t>(
+                                    xq[static_cast<size_t>(t * d_in + i)]) *
+                                static_cast<int32_t>(
+                                    q.q[static_cast<size_t>(o * d_in + i)]);
+                    }
+                    acc += static_cast<double>(xs[static_cast<size_t>(
+                               t * x_blocks + b)]) *
+                           isum;
                 }
                 ref[static_cast<size_t>(t * d_out + o)] =
-                    static_cast<float>(acc) + bias[static_cast<size_t>(o)];
+                    static_cast<float>(
+                        static_cast<double>(q.scales[static_cast<size_t>(o)]) *
+                        acc) +
+                    bias[static_cast<size_t>(o)];
             }
         }
 
@@ -140,6 +168,42 @@ void test_linear_q8_kernel() {
                            "d_in=%lld i=%zu: got %g want %g",
                            static_cast<long long>(d_in), i,
                            static_cast<double>(y[i]), static_cast<double>(ref[i]));
+        }
+
+        // And the semantic sanity check: the int8 result should still sit
+        // close to the true fp32 linear — within the error the two
+        // quantizations allow. Bound uses the ROW-level activation scale,
+        // which is >= every block scale, so it stays a valid (loose) bound:
+        // |y_q8 - y_fp32| <= x_row_scale/2 * sum|w_row| +
+        // w_scale/2 * sum|x_row| (each operand rounds by at most half its
+        // step against the other's exact values), plus fp slack.
+        const nano::QuantMatrix xrow = nano::quantize_rows(x.data(), tokens, d_in);
+        std::vector<float> exact(static_cast<size_t>(tokens * d_out));
+        nano::ops::linear(x.data(), w.data(), bias.data(), exact.data(), tokens,
+                          d_in, d_out);
+        for (int64_t t = 0; t < tokens; ++t) {
+            double sum_abs_x = 0.0;
+            for (int64_t i = 0; i < d_in; ++i) {
+                sum_abs_x += std::fabs(x[static_cast<size_t>(t * d_in + i)]);
+            }
+            for (int64_t o = 0; o < d_out; ++o) {
+                double sum_abs_w = 0.0;
+                for (int64_t i = 0; i < d_in; ++i) {
+                    sum_abs_w += std::fabs(w[static_cast<size_t>(o * d_in + i)]);
+                }
+                const double bound =
+                    0.5 * static_cast<double>(xrow.scales[static_cast<size_t>(t)]) *
+                        sum_abs_w +
+                    0.5 * static_cast<double>(q.scales[static_cast<size_t>(o)]) *
+                        sum_abs_x +
+                    1e-3;
+                const size_t idx = static_cast<size_t>(t * d_out + o);
+                const double err = std::fabs(static_cast<double>(y[idx]) -
+                                             static_cast<double>(exact[idx]));
+                NANO_CHECK_MSG(err <= bound,
+                               "d_in=%lld [%zu]: |q8 - fp32| %g > bound %g",
+                               static_cast<long long>(d_in), idx, err, bound);
+            }
         }
     }
 
@@ -272,10 +336,16 @@ void test_real_model() {
     }
 
     // Greedy continuations vs the fp32 goldens: count how far each matches
-    // and print it. Quantization MAY legitimately diverge mid-sequence; the
-    // hard assertion is only that the first token (== the argmax check
-    // above, on fresh state) matches. Whatever happens gets printed, and the
-    // session log records the measured result.
+    // and print it. Quantization MAY legitimately diverge mid-sequence — but
+    // only at a genuine near-tie. The int8 path's top-10 logit noise vs HF
+    // fp32 measures ~0.2-0.4 (printed above), so a token whose fp32 top-2
+    // margin is far above that cannot legitimately flip. Enforced: on any
+    // divergence, teacher-force the golden prefix through the fp32 engine
+    // and assert the flipped step's top-2 margin is below kTieMargin. (The
+    // sdot kernel's one observed flip sits at margin 0.031; every token
+    // with margin >= 0.12 is preserved — session 5 log.)
+    constexpr float kTieMargin = 0.1f;
+    nano::Engine fp32_engine(dir, 2048);  // reference for margin checks
     const std::vector<int32_t> stop_ids = {151645, 151643};  // <|im_end|>, <|endoftext|>
     const nano::json::Value gg =
         nano::json::parse(nano::json::read_file("tests/data/generate_golden.json"));
@@ -295,10 +365,41 @@ void test_real_model() {
         NANO_CHECK_MSG(!got.empty() && got[0] == want[0],
                        "int8 first greedy token differs (prompt: %s)",
                        c.at("prompt").as_string().c_str());
-        std::printf("int8 greedy vs fp32 golden (%s): %s (%zu/%zu tokens match)\n",
-                    c.at("prompt").as_string().c_str(),
-                    identical ? "IDENTICAL" : "diverges", match,
-                    std::max(want.size(), got.size()));
+        if (identical) {
+            std::printf("int8 greedy vs fp32 golden (%s): IDENTICAL (%zu/%zu "
+                        "tokens match)\n",
+                        c.at("prompt").as_string().c_str(), match, want.size());
+            continue;
+        }
+
+        // Diverged at step `match`: replay the golden prefix through the
+        // fp32 engine and measure how contested that step really was.
+        fp32_engine.reset();
+        std::vector<int32_t> prefix = prompt_ids;
+        prefix.insert(prefix.end(), want.begin(),
+                      want.begin() + static_cast<int64_t>(match));
+        const std::span<const float> logits = fp32_engine.forward(prefix);
+        float v1 = logits[0], v2 = -1e30f;
+        for (size_t i = 1; i < logits.size(); ++i) {
+            if (logits[i] > v1) {
+                v2 = v1;
+                v1 = logits[i];
+            } else if (logits[i] > v2) {
+                v2 = logits[i];
+            }
+        }
+        const float margin = v1 - v2;
+        std::printf("int8 greedy vs fp32 golden (%s): diverges at step %zu/%zu, "
+                    "where the fp32 top-2 margin is %.4f\n",
+                    c.at("prompt").as_string().c_str(), match,
+                    std::max(want.size(), got.size()),
+                    static_cast<double>(margin));
+        NANO_CHECK_MSG(margin < kTieMargin,
+                       "int8 flipped a decisive token: fp32 margin %.4f >= %.2f "
+                       "(prompt: %s)",
+                       static_cast<double>(margin),
+                       static_cast<double>(kTieMargin),
+                       c.at("prompt").as_string().c_str());
     }
 }
 

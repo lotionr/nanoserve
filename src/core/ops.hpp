@@ -36,11 +36,25 @@ void linear(const float* x, const float* w, const float* bias, float* y,
 
 /// linear() with an int8 weight matrix (F027): W holds per-row-quantized
 /// int8 values ([d_out, d_in], same layout as fp32), `scales` one fp32 scale
-/// per output row. Each weight is widened to fp32 in-register and the row's
-/// dot product is scaled once at the end:
-///   y[t, o] = scales[o] * sum_i x[t, i] * (float)w[o, i]  (+ bias[o]).
-/// Activations stay fp32 — the point is reading 4x fewer weight bytes, which
-/// is what bounds decode speed, not the multiply-adds.
+/// per output row.
+///
+/// The kernel is integer at its core (NEON sdot on Apple silicon): each fp32
+/// activation row is first quantized to int8 with one absmax scale per
+/// 32-value block (quantize_row_q8_blocks — same rounding as the offline
+/// weight quantizer, llama.cpp-Q8_0 granularity), each block's dot product
+/// runs int8 x int8 -> int32 exactly, and the scales are applied per block
+/// (activation) and per output row (weight):
+///   y[t, o] = scales[o] * sum_b x_scale[t, b] *
+///                         (sum_{i in block b} qw[o, i] * qa[t, i])  (+ bias[o])
+/// Activation quantization makes this LOSSIER than the fp32-widening kernel
+/// it replaced (each activation rounds to within half its block's step); the
+/// quality bar — top-1 logits and greedy continuations vs the fp32 goldens —
+/// is enforced by test_quant, and the win is decode speed: 16 multiply-adds
+/// per sdot instruction instead of 4 fma's plus widening shuffles.
+/// Bit-identical at any thread count (every output value is computed whole
+/// by one thread); NEON vs the scalar build agree per-block exactly but sum
+/// blocks in a different fp order, so cross-build parity is ~1e-5, like the
+/// fp32 kernels.
 void linear_q8(const float* x, const int8_t* w, const float* scales,
                const float* bias, float* y, int64_t tokens, int64_t d_in,
                int64_t d_out);

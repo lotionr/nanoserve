@@ -1,10 +1,41 @@
 #include "core/quant.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
 
 namespace nano {
+
+float quantize_row_q8(const float* src, int8_t* out, int64_t n) {
+    float absmax = 0.0f;
+    for (int64_t i = 0; i < n; ++i) {
+        absmax = std::max(absmax, std::fabs(src[i]));
+    }
+    if (absmax == 0.0f) {  // all-zero row: avoid 0/0
+        for (int64_t i = 0; i < n; ++i) {
+            out[i] = 0;
+        }
+        return 0.0f;
+    }
+    const float inv_scale = 127.0f / absmax;
+    for (int64_t i = 0; i < n; ++i) {
+        // lrintf = round to nearest (ties to even, the default FP mode).
+        // |src[i]| <= absmax, so the result is already within [-127, 127];
+        // the clamp guards the absmax value itself landing on 127.00001f.
+        const long v = std::lrintf(src[i] * inv_scale);
+        out[i] = static_cast<int8_t>(std::min<long>(127, std::max<long>(-127, v)));
+    }
+    return absmax / 127.0f;
+}
+
+void quantize_row_q8_blocks(const float* src, int8_t* out, float* scales, int64_t n) {
+    int64_t b = 0;
+    for (int64_t i = 0; i < n; i += kQ8Block, ++b) {
+        const int64_t len = std::min(kQ8Block, n - i);
+        scales[b] = quantize_row_q8(src + i, out + i, len);
+    }
+}
 
 QuantMatrix quantize_rows(const float* w, int64_t rows, int64_t cols) {
     QuantMatrix m;
@@ -12,31 +43,9 @@ QuantMatrix quantize_rows(const float* w, int64_t rows, int64_t cols) {
     m.cols = cols;
     m.q.resize(static_cast<size_t>(rows * cols));
     m.scales.resize(static_cast<size_t>(rows));
-
     for (int64_t r = 0; r < rows; ++r) {
-        const float* row = w + r * cols;
-        float absmax = 0.0f;
-        for (int64_t c = 0; c < cols; ++c) {
-            absmax = std::max(absmax, std::fabs(row[c]));
-        }
-        const float scale = absmax / 127.0f;
-        m.scales[static_cast<size_t>(r)] = scale;
-
-        int8_t* out = m.q.data() + r * cols;
-        if (scale == 0.0f) {  // all-zero row: avoid 0/0
-            for (int64_t c = 0; c < cols; ++c) {
-                out[c] = 0;
-            }
-            continue;
-        }
-        const float inv_scale = 127.0f / absmax;
-        for (int64_t c = 0; c < cols; ++c) {
-            // lrintf = round to nearest (ties to even, the default FP mode).
-            // |row[c]| <= absmax, so the result is already within [-127, 127];
-            // the clamp guards the absmax value itself landing on 127.00001f.
-            const long v = std::lrintf(row[c] * inv_scale);
-            out[c] = static_cast<int8_t>(std::min<long>(127, std::max<long>(-127, v)));
-        }
+        m.scales[static_cast<size_t>(r)] =
+            quantize_row_q8(w + r * cols, m.q.data() + r * cols, cols);
     }
     return m;
 }

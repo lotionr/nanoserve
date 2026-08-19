@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <vector>
 
+#include "core/quant.hpp"
 #include "core/threadpool.hpp"
 
 // NEON on arm64 (every Apple silicon Mac); everything else takes the scalar
@@ -15,6 +17,16 @@
 #include <arm_neon.h>
 #else
 #define NANO_HAS_NEON 0
+#endif
+
+// The int8 dot-product instruction (sdot). Every Apple silicon chip has it
+// (ARMv8.2 dotprod extension, baseline since the M1); older arm64 or a
+// NANO_FORCE_SCALAR build falls back to the plain integer loop below —
+// which computes the SAME exact int32 sum, just slower.
+#if NANO_HAS_NEON && defined(__ARM_FEATURE_DOTPROD)
+#define NANO_HAS_SDOT 1
+#else
+#define NANO_HAS_SDOT 0
 #endif
 
 namespace nano::ops {
@@ -92,55 +104,130 @@ void linear_range(const float* x, const float* w, const float* bias, float* y,
     }
 }
 
-/// Dot product of an fp32 activation row with an int8 weight row. Each int8
-/// is widened to fp32 in-register, so the arithmetic matches dequantize-then-
-/// dot exactly (widening int8 -> fp32 is lossless); only the memory traffic
-/// changes. Same four-accumulator structure as dot_f32, and the same reason:
-/// independent fmla chains instead of one serialized accumulator.
-float dot_q8_f32(const float* a, const int8_t* w, int64_t n) {
-#if NANO_HAS_NEON
-    float32x4_t acc0 = vdupq_n_f32(0.0f);
-    float32x4_t acc1 = vdupq_n_f32(0.0f);
-    float32x4_t acc2 = vdupq_n_f32(0.0f);
-    float32x4_t acc3 = vdupq_n_f32(0.0f);
-    int64_t i = 0;
-    for (; i + 16 <= n; i += 16) {
-        // 16 int8 -> 2x int16x8 -> 4x int32x4 -> 4x float32x4.
-        const int8x16_t q = vld1q_s8(w + i);
-        const int16x8_t lo = vmovl_s8(vget_low_s8(q));
-        const int16x8_t hi = vmovl_s8(vget_high_s8(q));
-        acc0 = vfmaq_f32(acc0, vld1q_f32(a + i),
-                         vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo))));
-        acc1 = vfmaq_f32(acc1, vld1q_f32(a + i + 4),
-                         vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo))));
-        acc2 = vfmaq_f32(acc2, vld1q_f32(a + i + 8),
-                         vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi))));
-        acc3 = vfmaq_f32(acc3, vld1q_f32(a + i + 12),
-                         vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi))));
+/// Integer-core dot product for linear_q8: activations quantized int8 per
+/// 32-value block (`a` + one fp32 scale per block in `a_scales`), weights
+/// int8 (`w`, whose per-ROW scale the caller applies afterwards). Returns
+///     sum_b  a_scales[b] * ( sum_{i in block b} a[i] * w[i] )
+/// i.e. each block's dot product is computed EXACTLY in int32 and only the
+/// per-block results meet floating point.
+///
+/// Why integer: one sdot instruction (vdotq_s32) multiplies 16 int8 pairs
+/// and adds them into 4 int32 lanes. The previous widening kernel needed
+/// ~11 instructions for the same 16 weights (load + 2x vmovl to int16 + 4x
+/// (vmovl to int32 + vcvt to fp32) + 4x fmla), so decode was still
+/// instruction-throughput limited instead of memory-bandwidth limited.
+/// Per 32-weight block this path is 2 sdot + 1 cvt + 1 fma — the same
+/// structure as llama.cpp's Q8_0 vec_dot.
+///
+/// Why per-block activation scales (not one per row): activation rows carry
+/// outliers, and a row-wide absmax scale rounded typical values coarsely
+/// enough to flip greedy tokens on the golden prompts (measured — see the
+/// session log). Blocks confine an outlier's damage to its own 32 values.
+///
+/// No overflow: |q| <= 127 so each product is <= 16129, and a block sums 32
+/// of them -> |block sum| <= 516k, far inside int32. (sdot widens each
+/// 4-product group straight into an int32 lane; no int16 stage to saturate.)
+///
+/// Determinism: within a block the int32 sum is exact in any order, so the
+/// NEON and scalar builds agree bit-for-bit per block; the fp32 summation
+/// ACROSS blocks differs in order between the two builds (4 SIMD lanes vs
+/// sequential), so cross-build comparisons hold to ~1e-5 like the other fp
+/// kernels — but within one build, results are bit-identical at any thread
+/// count (each output value is computed whole by exactly one thread).
+///
+/// Four independent accumulators (4 blocks = 128 int8 per iteration), same
+/// shape and reason as dot_f32: independent fma chains instead of one
+/// serialized accumulator.
+float dot_q8_blocks(const int8_t* a, const float* a_scales, const int8_t* w,
+                    int64_t n) {
+    const int64_t full_blocks = n / kQ8Block;  // kQ8Block == 32
+#if NANO_HAS_SDOT
+    // One block's exact integer dot: two 16-wide sdot into the same int32x4.
+    const auto block_dot = [](const int8_t* pa, const int8_t* pw) -> int32x4_t {
+        const int32x4_t d0 =
+            vdotq_s32(vdupq_n_s32(0), vld1q_s8(pa), vld1q_s8(pw));
+        return vdotq_s32(d0, vld1q_s8(pa + 16), vld1q_s8(pw + 16));
+    };
+    float32x4_t facc0 = vdupq_n_f32(0.0f);
+    float32x4_t facc1 = vdupq_n_f32(0.0f);
+    float32x4_t facc2 = vdupq_n_f32(0.0f);
+    float32x4_t facc3 = vdupq_n_f32(0.0f);
+    int64_t b = 0;
+    for (; b + 4 <= full_blocks; b += 4) {
+        const int64_t i = b * kQ8Block;
+        // facc lanes hold partial sums; scaling the whole int32x4 by the
+        // block's one scale is valid because every lane belongs to the block.
+        facc0 = vfmaq_n_f32(facc0, vcvtq_f32_s32(block_dot(a + i, w + i)),
+                            a_scales[b]);
+        facc1 = vfmaq_n_f32(facc1, vcvtq_f32_s32(block_dot(a + i + 32, w + i + 32)),
+                            a_scales[b + 1]);
+        facc2 = vfmaq_n_f32(facc2, vcvtq_f32_s32(block_dot(a + i + 64, w + i + 64)),
+                            a_scales[b + 2]);
+        facc3 = vfmaq_n_f32(facc3, vcvtq_f32_s32(block_dot(a + i + 96, w + i + 96)),
+                            a_scales[b + 3]);
     }
-    float sum = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3)));
-    for (; i < n; ++i) {  // tail: up to 15 elements
-        sum += a[i] * static_cast<float>(w[i]);
+    for (; b < full_blocks; ++b) {
+        facc0 = vfmaq_n_f32(facc0, vcvtq_f32_s32(block_dot(a + b * kQ8Block,
+                                                           w + b * kQ8Block)),
+                            a_scales[b]);
+    }
+    float sum =
+        vaddvq_f32(vaddq_f32(vaddq_f32(facc0, facc1), vaddq_f32(facc2, facc3)));
+#else
+    float sum = 0.0f;
+    for (int64_t b = 0; b < full_blocks; ++b) {
+        int32_t isum = 0;
+        for (int64_t i = b * kQ8Block; i < (b + 1) * kQ8Block; ++i) {
+            isum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(w[i]);
+        }
+        sum += a_scales[b] * static_cast<float>(isum);
+    }
+#endif
+    if (const int64_t tail = n % kQ8Block; tail != 0) {  // partial last block
+        int32_t isum = 0;
+        for (int64_t i = full_blocks * kQ8Block; i < n; ++i) {
+            isum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(w[i]);
+        }
+        sum += a_scales[full_blocks] * static_cast<float>(isum);
     }
     return sum;
-#else
-    float acc = 0.0f;
-    for (int64_t i = 0; i < n; ++i) {
-        acc += a[i] * static_cast<float>(w[i]);
-    }
-    return acc;
-#endif
 }
+
+/// Quantized-activation scratch for linear_q8, reused across calls. Grow-only
+/// (the Engine::Scratch pattern, F024): the prefill call is the largest, so
+/// every later 1-token decode step finds it already big enough and the decode
+/// hot loop stays allocation-free. ops entry points run on the single
+/// orchestrating thread (see set_num_threads), so one buffer suffices — the
+/// pool workers only READ it inside linear_q8's parallel_for.
+std::vector<int8_t> g_act_q;      // [tokens * d_in] int8 activations
+std::vector<float> g_act_scales;  // [tokens * blocks_per_row] block scales
 
 /// linear_q8's serial kernel over output columns [o_begin, o_end) — the q8
 /// twin of linear_range, and funnel for both its serial and threaded paths.
-void linear_q8_range(const float* x, const int8_t* w, const float* scales,
-                     const float* bias, float* y, int64_t tokens, int64_t d_in,
-                     int64_t d_out, int64_t o_begin, int64_t o_end) {
+/// `xq`/`x_scales` are the pre-quantized activation rows (g_act_*);
+/// `x_blocks` is the number of 32-value blocks per activation row.
+///
+/// The math, spelled out (the "accuracy model" for the int8 path):
+///   weight row:  w[o,i] ~= w_scale[o] * qw[o,i],    |err| <= w_scale[o]/2
+///   activations: x[t,i] ~= x_scale[t,b] * qa[t,i],  |err| <= x_scale[t,b]/2
+///                (b = i/32: one scale per 32-value block)
+///   y[t,o] = w_scale[o] * sum_b x_scale[t,b] * (sum_{i in b} qw[o,i]*qa[t,i])
+///            (+ bias[o])
+/// Each block's int32 sum is EXACT; the only error sources are the two
+/// quantization roundings, the per-block int->fp32 conversion + scale fma,
+/// and the final w_scale multiply. Whether that budget is acceptable is not
+/// argued, it is measured: test_quant checks top-1 logits and greedy
+/// continuations against the fp32 goldens.
+void linear_q8_range(const int8_t* xq, const float* x_scales, int64_t x_blocks,
+                     const int8_t* w, const float* scales, const float* bias,
+                     float* y, int64_t tokens, int64_t d_in, int64_t d_out,
+                     int64_t o_begin, int64_t o_end) {
     for (int64_t t = 0; t < tokens; ++t) {
-        const float* row = x + t * d_in;
+        const int8_t* row = xq + t * d_in;
+        const float* row_scales = x_scales + t * x_blocks;
         for (int64_t o = o_begin; o < o_end; ++o) {
-            const float acc = scales[o] * dot_q8_f32(row, w + o * d_in, d_in);
+            const float acc =
+                scales[o] * dot_q8_blocks(row, row_scales, w + o * d_in, d_in);
             y[t * d_out + o] = bias ? acc + bias[o] : acc;
         }
     }
@@ -174,14 +261,33 @@ void linear(const float* x, const float* w, const float* bias, float* y,
 void linear_q8(const float* x, const int8_t* w, const float* scales,
                const float* bias, float* y, int64_t tokens, int64_t d_in,
                int64_t d_out) {
+    // Quantize each activation row once, up front and serial: O(tokens*d_in)
+    // work that unlocks O(tokens*d_in*d_out) integer dots. In decode
+    // (tokens=1) this is one absmax pass + one rounding pass over d_in
+    // values — well under 1% of the projection it feeds.
+    const int64_t x_blocks = (d_in + kQ8Block - 1) / kQ8Block;
+    const size_t need = static_cast<size_t>(tokens * d_in);
+    if (g_act_q.size() < need) {
+        g_act_q.resize(need);
+    }
+    if (g_act_scales.size() < static_cast<size_t>(tokens * x_blocks)) {
+        g_act_scales.resize(static_cast<size_t>(tokens * x_blocks));
+    }
+    for (int64_t t = 0; t < tokens; ++t) {
+        quantize_row_q8_blocks(x + t * d_in, g_act_q.data() + t * d_in,
+                               g_act_scales.data() + t * x_blocks, d_in);
+    }
+
     if (tokens * d_in * d_out < kParallelThreshold) {
-        linear_q8_range(x, w, scales, bias, y, tokens, d_in, d_out, 0, d_out);
+        linear_q8_range(g_act_q.data(), g_act_scales.data(), x_blocks, w, scales,
+                        bias, y, tokens, d_in, d_out, 0, d_out);
         return;
     }
     // Same split as linear(): disjoint output columns, one thread per slice,
     // identical serial arithmetic — bit-exact at any thread count.
     pool().parallel_for(d_out, [&](int64_t o_begin, int64_t o_end) {
-        linear_q8_range(x, w, scales, bias, y, tokens, d_in, d_out, o_begin, o_end);
+        linear_q8_range(g_act_q.data(), g_act_scales.data(), x_blocks, w, scales,
+                        bias, y, tokens, d_in, d_out, o_begin, o_end);
     });
 }
 
