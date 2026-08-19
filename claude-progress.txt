@@ -1,4 +1,96 @@
 ---
+Session: 2026-08-19 (Session 8 — continuous batching F036 + polish)
+Completed: F036 (35/36 features passing; 17/17 ctest green + 6/6 pytest).
+  Feature list is now COMPLETE except F004 (CI), which only waits on the
+  user creating the GitHub remote — no engine/server work remains.
+Notes:
+  - F036 ENGINE SIDE (src/model/batch.{hpp,cpp}): BatchEngine = model + a
+    PagePool sized for max_seqs full sequences + Sequence (one PagedKvCache
+    + length; unique_ptr, destruction frees the pages). prefill() reuses
+    layer_forward unchanged (bit-identical to Engine by construction);
+    decode_step() stacks each live sequence's current token into
+    [n, hidden] and runs layer_forward_batch — the batched twin of
+    layer_forward: projections/MLP batch through one GEMM (the win), RoPE
+    + attention per row against that row's own cache at its own position,
+    k/v stay per-row GEMVs into each row's cache (they're the small
+    matrices). Every row's logits are computed: final rmsnorm over n rows
+    + ONE lm_head GEMM — at [151936, 896] the lm_head is the biggest
+    single weight read of a step, so batching it matters most. qwen2 now
+    exposes weight_linear + embed_rows for the twin.
+  - THE KERNEL FIX THE FEATURE FLUSHED OUT (perf(ops) commit): linear_range
+    / linear_q8_range iterated token-OUTER, weight-row-INNER — streaming
+    the whole weight matrix once PER TOKEN. Invisible at tokens=1, fatal
+    for batching: the first honest measurement gave only 1.47x aggregate
+    at n=4. Swapping to weight-row-outer (each W row read once, dotted
+    against all n token rows) took a 4-seq decode step 58.2 -> 31.3 ms =
+    2.85x aggregate. Outputs bit-identical (same dot per element);
+    test_ops now asserts GEMM-row == GEMV parity explicitly (fp32 + int8)
+    because batching's whole determinism story rests on it.
+  - SERVER SIDE: http::Server now hands the handler an OWNING Connection
+    (move-only fd + parsed request; dtor closes; handler must not throw) —
+    the accept loop stays a single-threaded parser, serve.cpp moves
+    connections into a FIFO queue, and ONE worker thread owning the
+    BatchEngine loops { admit up to --max-batch (default 4) -> tokenize +
+    whole-prompt prefill newcomers one at a time -> one decode_step for
+    all live }. Requests join at step boundaries; per-request Sampler /
+    StreamDecoder / pages live in a Live struct; a client hangup retires
+    only that request (writer errors caught per-request). Admission cap ==
+    pool sizing, so pool exhaustion is unreachable by construction; excess
+    requests queue FIFO (no 429 — documented choice).
+  - F036 VERIFICATION:
+    * test_batch A: BatchEngine solo greedy == Engine(paged) greedy,
+      token-for-token, 4 prompts (ties the new path to the goldens-tied
+      engine).
+    * test_batch B (adversarial contamination construction): staggered
+      schedule — S0 alone 4 steps, admit S1 mid-flight, 4 joint steps,
+      admit S2, run until S0 finishes, FREE S0's pages, admit S3 (grabs
+      S0's recycled pages LIFO while S1/S2 are mid-flight). Every sequence
+      bit-identical to its solo run; any attention read of a foreign page
+      or stale block table breaks this. KV high-water 2.25 MiB total.
+    * test_batch C (all three timings back-to-back in one hot process):
+      Engine 22.26 ms/step, BatchEngine n=1 21.21 (-4.7% = no latency
+      regression, bound is <20%), n=4 31.30 ms/step = 127.8 tok/s
+      aggregate vs 44.9 serial = 2.85x.
+    * test_server E: 4 genuinely concurrent HTTP clients (threads +
+      sockets against the real spawned binary), every response
+      byte-identical to its serial golden, wall 0.90s vs 2.28s serial =
+      2.36x end-to-end (includes serial prefill). All F035 checks (SSE,
+      schema, usage, 400/404/405) still green through the batched
+      scheduler; 58 checks total.
+  - TIMING METHODOLOGY BURNS (for future sessions): (1) never run two
+    model processes concurrently while timing — the first test_batch +
+    test_server run overlapped and produced garbage numbers for both;
+    (2) don't time a baseline early in a process and the contender
+    minutes-of-hot-loops later — thermal/scheduling drift masqueraded as
+    a 60% "regression" until all three timings ran adjacent.
+  - BENCH REFRESH (the loop swap touches single-sequence numbers too):
+    fp32 prefill 144.5 -> 160.1 +/- 5.0 tok/s (the swap helps GEMM
+    prefill), fp32 decode 50.8 -> 52.5 (noise); int8 prefill 546.5 ->
+    500.6 +/- 23.9 (consistent ~7% regression across clean runs — traded
+    knowingly for the 2.85x batched-decode win), int8 decode unchanged
+    145.4; metal rows unchanged. Protocol note: 5 bench runs total —
+    back-to-back benching heats the machine and runs 2-4 each flagged one
+    row HIGH-VARIANCE; the kept run followed a 4-minute cooldown and is
+    clean. All results files kept in bench/results/.
+  - POLISH SWEEP: README Layout section was two features stale ("later:
+    transformer forward / HTTP endpoint"), Why said "single-batch engine"
+    — both fixed; added a Serving section (curl example verified by hand
+    against the running binary, stream + non-stream); F036 status entry
+    added + an honest unchecked CI bullet; bench table regenerated at
+    c441464. paged_kv.hpp design note updated (F036 chose admission
+    capping, not preemption). `pip wheel .` builds clean from scratch;
+    fresh `bash init.sh` (clean build + ctest) green end to end.
+  - ctest 33.7s -> ~48s (test_batch loads two engines ~10s; test_server
+    gained the concurrency part).
+Next: feature list complete except F004 — CI just needs the user to create
+  the GitHub remote and push (.github/workflows/ci.yml already written).
+  The repo is publishable as-is. Remaining threads are OPTIONAL perf work,
+  none blocking: prefill GEMM tiling (llama.cpp's Accelerate prefill is
+  still ~3.5x ahead), chunked prefill to bound step latency under load,
+  recovering the ~7% int8 single-seq prefill, Metal whole-layer command
+  buffers (the F033 negative result's known fix).
+---
+---
 Session: 2026-08-19 (Session 7 — paged KV cache F034, HTTP serving F035)
 Completed: F034 + F035 (34/36 features passing; 16/16 ctest green + 6/6 pytest)
 Notes:

@@ -38,7 +38,9 @@
 //     cache there is nothing to rank.
 //   - No preemption or CPU swap: when the pool is exhausted, alloc() throws.
 //     A scheduler that recomputes or swaps victims is a serving-layer
-//     concern (F036 territory), not a cache concern.
+//     concern, not a cache concern — and the serving layer (F036) chose the
+//     simpler guarantee instead: admission is capped at the number of
+//     sequences the pool is sized for, so exhaustion is unreachable there.
 //   - Pages are eagerly backed: alloc() returns a page id only after the
 //     memory behind it exists, so "allocated but unbacked" states are
 //     unrepresentable by construction. Systems that reserve virtual address

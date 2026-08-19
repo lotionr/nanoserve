@@ -17,9 +17,10 @@ Understanding inference serving at the level of "I built each piece myself" — 
 safetensors file is laid out, why decode is memory-bound while prefill is compute-bound,
 what a KV cache actually stores and why paging it matters, what int8 quantization does
 to quality and to bandwidth — rather than at the level of calling a library. The target
-is a single-batch CPU engine for one small open model, benchmarked honestly against
-llama.cpp on the same machine, then extended layer by layer (threading, SIMD, int8,
-Metal) with the effect of each layer measured.
+is a CPU engine for one small open model, benchmarked honestly against llama.cpp on
+the same machine, then extended layer by layer (threading, SIMD, int8, Metal, paged
+KV cache, an HTTP endpoint with continuous batching) with the effect of each layer
+measured.
 
 ## Model
 
@@ -88,7 +89,22 @@ Current state (kept honest; see `feature_list.json` for the full sequenced list)
       HTTP: schema and usage checked against a locally loaded tokenizer, greedy
       determinism across requests, streamed chunks reassembling to the
       non-streamed text, and the 400/404/405 error paths
-- [ ] Stretch: continuous batching in the server
+- [x] Continuous batching in the server: concurrent requests decode TOGETHER —
+      each step stacks every live request's next token into one `[n, hidden]`
+      matrix so one pass over the weights serves all of them (decode is
+      weight-bandwidth-bound, so this is nearly free). One worker thread owns
+      the engine; new requests join at the next step boundary; each request's
+      KV lives in its own block table on the shared page pool (what F034 was
+      for). Correctness is held to *bit-identical*: a request served in a batch
+      must return byte-identical text to the same request served alone —
+      asserted end-to-end with 4 concurrent HTTP clients against serial
+      goldens, and at the engine level under adversarial page interleaving
+      and page reuse (`test_batch`). Measured effect (test prints, M3 Pro):
+      4-sequence decode is 2.85x aggregate throughput vs single-sequence at
+      engine level (2.36x end-to-end through HTTP including serial prefill),
+      with single-request decode latency unchanged
+- [ ] GitHub Actions CI (`.github/workflows/ci.yml` is written — ubuntu + macos,
+      model-dependent tests skip; goes live when the repo gets a remote)
 
 ## Benchmarks
 
@@ -104,19 +120,19 @@ Hardware: Apple M3 Pro (5P + 6E cores, 18 GB), macOS 15.5.
 
 | engine | precision | backend | threads | prefill tok/s | decode tok/s | TTFT ms |
 |---|---|---|---:|---:|---:|---:|
-| nanoserve (`cea0581`) | fp32 | cpu | 5 | 144.5 ± 0.4 | 50.8 ± 3.2 | 284 |
-| nanoserve (`cea0581`) | fp32 | metal | 5 | 144.2 ± 3.0 | 30.9 ± 0.9 | 284 |
+| nanoserve (`c441464`) | fp32 | cpu | 5 | 160.1 ± 5.0 | 52.5 ± 0.5 | 256 |
+| nanoserve (`c441464`) | fp32 | metal | 5 | 144.2 ± 3.8 | 31.4 ± 0.1 | 284 |
 | llama.cpp (`5112b97`) | f32 | cpu | 5 | 560.3 ± 2.5 | 55.4 ± 2.5 | 73 |
-| nanoserve (`cea0581`) | int8 | cpu | 5 | 546.5 ± 2.2 | 147.0 ± 0.4 | 75 |
-| nanoserve (`cea0581`) | int8 | metal | 5 | 150.4 ± 0.4 | 38.2 ± 0.2 | 273 |
+| nanoserve (`c441464`) | int8 | cpu | 5 | 500.6 ± 23.9 | 145.4 ± 0.6 | 82 |
+| nanoserve (`c441464`) | int8 | metal | 5 | 150.6 ± 0.2 | 38.5 ± 1.0 | 272 |
 | llama.cpp (`5112b97`) | q8_0 | cpu | 5 | 1428.1 ± 33.5 | 195.6 ± 7.3 | 29 |
 
-- **fp32 vs f32 decode:** llama.cpp is **1.09x faster** (55.4 vs 50.8 tok/s).
-- **int8 vs Q8_0 decode:** llama.cpp is **1.33x faster** (195.6 vs 147.0 tok/s).
-- **fp32 metal decode:** 1.64x slower than our CPU path (30.9 vs 50.8 tok/s).
-- **fp32 metal prefill:** at parity with our CPU path (144.2 vs 144.5 tok/s).
-- **int8 metal decode:** 3.85x slower than our CPU path (38.2 vs 147.0 tok/s).
-- **int8 metal prefill:** 3.63x slower than our CPU path (150.4 vs 546.5 tok/s).
+- **fp32 vs f32 decode:** llama.cpp is **1.06x faster** (55.4 vs 52.5 tok/s).
+- **int8 vs Q8_0 decode:** llama.cpp is **1.35x faster** (195.6 vs 145.4 tok/s).
+- **fp32 metal decode:** 1.67x slower than our CPU path (31.4 vs 52.5 tok/s).
+- **fp32 metal prefill:** 1.11x slower than our CPU path (144.2 vs 160.1 tok/s).
+- **int8 metal decode:** 3.78x slower than our CPU path (38.5 vs 145.4 tok/s).
+- **int8 metal prefill:** 3.32x slower than our CPU path (150.6 vs 500.6 tok/s).
 
 Caveats, stated plainly: the f32 GGUF is converted from the exact safetensors file nanoserve loads, so the fp32 row is like-for-like; the int8 WEIGHT formats are NOT identical (nanoserve: per-row scales, 8.0 bits/weight; llama.cpp Q8_0: per-32-block scales, 8.5 bits/weight — finer-grained and slightly larger). On the CPU, both engines quantize activations to int8 per 32-value block at runtime and compute the dot products with integer SIMD (sdot). nanoserve numbers come from the engine's internal prefill/decode timers on a real prompt; llama.cpp numbers come from `llama-bench` with the same token counts, threads, and repeat count (its decode test starts from an empty context — at 0.5B the KV-read difference is ~3 MB/token vs ~0.5-2 GB/token of weights, i.e. under the noise floor). The thread count was chosen by measuring both engines at 5 (performance cores) and 11 (all hardware threads): decode is fastest at 5 for BOTH engines on this chip (the sweep files sit in bench/results/). llama.cpp is its default macOS CPU build, which uses Accelerate BLAS for prompt processing — much of its prefill lead is Apple's GEMM, not ggml kernels.
 
@@ -149,12 +165,33 @@ for chunk in engine.generate("Tell me a story.", max_tokens=64, stream=True):
     print(chunk, end="", flush=True)
 ```
 
+## Serving
+
+```sh
+# add --int8 for the fast path, after `nanoserve quantize` has written the int8 file
+./build/nanoserve serve models/qwen2.5-0.5b-instruct --port 8080
+
+curl -s localhost:8080/v1/completions \
+  -d '{"prompt": "The capital of France is", "max_tokens": 32, "temperature": 0}'
+```
+
+`POST /v1/completions` speaks the classic OpenAI completions schema (`prompt`,
+`max_tokens`, `temperature`/`top_k`/`top_p`/`seed`, usage counts; add
+`"stream": true` for token-by-token Server-Sent Events). Up to `--max-batch`
+requests (default 4) decode together — continuous batching — and the rest
+queue FIFO. The server binds loopback only: it is a demo of serving mechanics,
+not a hardened internet-facing daemon.
+
 ## Layout
 
 ```
-src/core/     tensor, dtype, mmap'd safetensors loader, minimal JSON parser
-src/model/    model config, tokenizer (later: transformer forward, KV cache)
-src/server/   nanoserve CLI (later: HTTP endpoint)
+src/core/     fp32/int8 kernels (NEON + scalar), thread pool, mmap'd safetensors
+              loader, minimal JSON parser, Metal backend
+src/model/    model config, BPE tokenizer, transformer forward pass, KV caches
+              (contiguous + paged), batched decode, sampling, chat template
+src/server/   nanoserve CLI, HTTP/1.1 server (raw POSIX sockets), /v1/completions
+              endpoint with continuous batching
+python/       pybind11 bindings (nanoserve.Engine)
 tests/        plain-executable ctest tests (llama.cpp style), golden vectors in tests/data/
 bench/        Python benchmark harness (tok/s, TTFT, llama.cpp comparison)
 scripts/      model download, golden-vector generation
