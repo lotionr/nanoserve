@@ -256,6 +256,134 @@ def gen_rope_golden() -> None:
     print(f"wrote {path}")
 
 
+# Chat prompts for the forward-pass goldens (F017-F019). Fixed forever so the
+# committed goldens stay valid; the C++ tests rebuild the same prompt ids with
+# the chat-template helper (F013).
+FORWARD_PROMPTS = [
+    "What is 2+2?",
+    "Write a haiku about caches.",
+    "Name the capital of France.",
+]
+
+
+def _load_fp32_model():
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    # fp32, not bf16: the C++ engine computes in fp32, and greedy argmax must
+    # compare against the same-precision reference.
+    model = AutoModelForCausalLM.from_pretrained(str(MODEL_DIR), dtype=torch.float32)
+    model.eval()
+    return model
+
+
+def _chat_ids(prompt: str) -> list:
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(str(MODEL_DIR))
+    return tok.apply_chat_template(
+        [{"role": "user", "content": prompt}],
+        tokenize=True,
+        add_generation_prompt=True,
+    )["input_ids"]
+
+
+def gen_layer_golden(model=None) -> None:
+    """F017: hidden states into and out of transformer layer 0 (HF fp32)."""
+    import torch
+
+    model = model or _load_fp32_model()
+    ids = _chat_ids(FORWARD_PROMPTS[0])
+    with torch.no_grad():
+        out = model(torch.tensor([ids]), output_hidden_states=True)
+    hs = out.hidden_states  # [0] = embeddings (layer 0 input), [1] = layer 0 output
+    golden = {
+        "source": "HF transformers fp32 forward, output_hidden_states",
+        "prompt": FORWARD_PROMPTS[0],
+        "ids": ids,
+        "hidden_size": hs[0].shape[-1],
+        "layer0_in": _floats(hs[0][0].numpy()),
+        "layer0_out": _floats(hs[1][0].numpy()),
+    }
+    path = DATA_DIR / "layer_golden.json"
+    path.write_text(json.dumps(golden))
+    print(f"wrote {path} ({len(ids)} tokens)")
+
+
+def gen_logits_golden(model=None) -> None:
+    """F018: final-position logits for 3 prompts (HF fp32).
+
+    The full vocab is 151936 logits per prompt — too large to commit as JSON —
+    so the golden stores the argmax, the top-10 (ids + values), and a strided
+    sample of 512 logits across the vocab. The C++ test checks all of these.
+    """
+    import numpy as np_
+    import torch
+
+    model = model or _load_fp32_model()
+    cases = []
+    for prompt in FORWARD_PROMPTS:
+        ids = _chat_ids(prompt)
+        with torch.no_grad():
+            logits = model(torch.tensor([ids])).logits[0, -1].numpy()
+        top10 = np_.argsort(logits)[::-1][:10]
+        stride = len(logits) // 512
+        sample_idx = list(range(0, len(logits), stride))
+        cases.append(
+            {
+                "prompt": prompt,
+                "ids": ids,
+                "argmax": int(np_.argmax(logits)),
+                "top10_ids": [int(i) for i in top10],
+                "top10_logits": _floats(logits[top10]),
+                "sample_stride": stride,
+                "sample_logits": _floats(logits[sample_idx]),
+            }
+        )
+    golden = {"source": "HF transformers fp32 forward, last-position logits",
+              "cases": cases}
+    path = DATA_DIR / "logits_golden.json"
+    path.write_text(json.dumps(golden))
+    print(f"wrote {path} ({len(cases)} prompts)")
+
+
+# The three FORWARD_PROMPTS all hit <|im_end|> before 32 tokens under pure
+# greedy; this one keeps going, so the golden also covers a full-length
+# (no-eos) 32-token decode.
+GENERATE_LONG_PROMPT = "Explain what a KV cache does in an LLM."
+
+
+def gen_generate_golden(model=None) -> None:
+    """F019: greedy 32-token continuations for chat prompts (HF fp32)."""
+    import torch
+
+    model = model or _load_fp32_model()
+    cases = []
+    for prompt in FORWARD_PROMPTS + [GENERATE_LONG_PROMPT]:
+        ids = _chat_ids(prompt)
+        input_ids = torch.tensor([ids])
+        with torch.no_grad():
+            # repetition_penalty=1.0 matters: the model's generation_config
+            # ships 1.1, and HF applies it even with do_sample=False, which
+            # is NOT pure greedy. The engine implements pure argmax decoding,
+            # so the reference must too. (Found when the golden test diverged
+            # at tokens that had already appeared in the prompt.)
+            out = model.generate(
+                input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                do_sample=False,
+                repetition_penalty=1.0,
+                max_new_tokens=32,
+            )
+        new_ids = out[0][len(ids):].tolist()
+        cases.append({"prompt": prompt, "prompt_ids": ids, "generated_ids": new_ids})
+    golden = {"source": "HF transformers fp32 greedy generate, max_new_tokens=32",
+              "cases": cases}
+    path = DATA_DIR / "generate_golden.json"
+    path.write_text(json.dumps(golden))
+    print(f"wrote {path} ({len(cases)} prompts)")
+
+
 def gen_embed_golden() -> None:
     """First N bf16 values of model.embed_tokens.weight, widened to fp32.
 
@@ -299,6 +427,10 @@ def main() -> None:
     gen_embed_golden()
     gen_ops_golden()
     gen_rope_golden()
+    model = _load_fp32_model()
+    gen_layer_golden(model)
+    gen_logits_golden(model)
+    gen_generate_golden(model)
 
 
 if __name__ == "__main__":

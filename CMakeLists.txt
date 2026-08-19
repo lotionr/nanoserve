@@ -25,6 +25,7 @@ add_library(nanoserve_core STATIC
     src/core/safetensors.cpp
     src/model/chat_template.cpp
     src/model/config.cpp
+    src/model/qwen2.cpp
     src/model/tokenizer.cpp
 )
 target_include_directories(nanoserve_core PUBLIC src)
@@ -54,4 +55,6 @@ if(NANOSERVE_BUILD_TESTS)
     nanoserve_test(test_safetensors)
     nanoserve_test(test_config)
     nanoserve_test(test_tokenizer)
+    nanoserve_test(test_forward)
+    nanoserve_test(test_generate)
 endif()

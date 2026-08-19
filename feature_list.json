@@ -192,7 +192,7 @@
         "Run test_forward via ctest",
         "Verify layer output matches within 1e-4 relative tolerance"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F018",
@@ -203,7 +203,7 @@
         "Run test_forward via ctest",
         "Verify top-1 token id matches exactly and logits match within 1e-3 relative tolerance"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F019",
@@ -215,7 +215,7 @@
         "Verify the generated token ids match the HF reference exactly",
         "Run test_generate via ctest covering the same check"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "F020",
